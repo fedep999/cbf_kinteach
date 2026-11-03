@@ -1,0 +1,35 @@
+cmake_minimum_required(VERSION 3.16)
+function(catkin_workspace)
+endfunction()
+catkin_workspace()
+project(Project VERSION 1.0.0 LANGUAGES CXX)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+# Place all built shared libraries into build/lib for easy linking
+if(NOT CMAKE_ARCHIVE_OUTPUT_DIRECTORY)
+  set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib")
+endif()
+if(NOT CMAKE_LIBRARY_OUTPUT_DIRECTORY)
+  set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib")
+endif()
+if(NOT CMAKE_RUNTIME_OUTPUT_DIRECTORY)
+  set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+endif()
+
+# Core CBF packages in dependency order
+add_subdirectory(cbf_common)
+add_subdirectory(damping_cbf_controller)
+add_subdirectory(torque_cbf_controller)
+
+# Optional Simulink MEX packages (compiled if MATLAB is detected)
+find_package(Matlab COMPONENTS MAIN_PROGRAM MEX_COMPILER SIMULINK QUIET)
+if(Matlab_FOUND)
+  message(STATUS "MATLAB found at ${Matlab_ROOT_DIR}: Enabling Simulink MEX targets")
+  add_subdirectory(damping_cbf_simulink)
+  add_subdirectory(torque_cbf_simulink)
+else()
+  message(STATUS "MATLAB not detected: Skipping Simulink MEX targets (compile via build_mex.m inside MATLAB if needed)")
+endif()

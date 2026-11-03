@@ -1,0 +1,20 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>torque_cbf_simulink</name>
+  <version>1.0.0</version>
+  <description>Simulink integration for Franka Panda Torque CBF Controller linking directly to torque_cbf C++ library</description>
+  <maintainer email="galileo@todo.todo">galileo</maintainer>
+  <license>Proprietary</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>cbf_common</depend>
+  <depend>torque_cbf</depend>
+  <depend>pinocchio</depend>
+  <depend>Eigen3</depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

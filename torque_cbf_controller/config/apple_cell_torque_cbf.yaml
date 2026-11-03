@@ -1,0 +1,76 @@
+# ==============================================================================
+# UR10e Apple Picking Cell — Direct Joint-Torque CBF Controller Configuration
+# ==============================================================================
+
+# Simulation & Execution Timing
+simulation:
+  dt: 0.001          # Simulation time step [s] (1 kHz)
+  period: 4.5        # Base duration of one 3D harmonic cycle [s]
+  num_periods: 2     # Number of consecutive periods before simulation ends
+  tool_frame: "ur10e_tool0"
+
+# File Paths (relative to package root or absolute)
+paths:
+  xacro_file: "/home/galileo/projects/apple_cell_ws/src/apple_cell/apple_picking_cell_description/urdf/apple_picking_cell.urdf.xacro"
+  csv_output: "src/torque_cbf_controller/examples/csv/sim_apple_cell_torque_trajectory.csv"
+  plot_output: "src/torque_cbf_controller/examples/plots/fig5_apple_cell_torque_pinocchio.png"
+
+# Hyperplanes defining the safety obstacles
+planes:
+  plane1:
+    name: "Table Sorting Surface"
+    normal: [0.0, 0.0, 1.0]
+    offset: [0.48, 0.16, 1.05]
+  plane2:
+    name: "45° Wall"
+    normal: [-0.7071067811865475, 0.0, 0.7071067811865475]
+    offset: [0.55, 0.16, 1.05]
+
+# Direct Joint-Torque Control Barrier Function (CBF) Parameters
+cbf:
+  p_ths: 0.35                       # Braking zone thickness / boundary threshold [m]
+  v_ths: -0.003                     # Safe touchdown normal velocity [m/s]
+  v_0: -0.4                         # Safe entry boundary normal velocity [m/s]
+  gamma: 20.0                       # CBF convergence gain [s^-1]
+  w_slack: 10000.0                  # Slack quadratic penalty weight w_delta
+  w_lin: 1000000.0                  # Slack linear penalty weight w_lin
+  profile: "smoothstep"             # Envelope profile: "smoothstep", "quadratic", or "linear"
+  compensate_external_force: true   # Whether to include external wrench F_ext in a_drift
+  tau_limit: 150.0                  # Symmetric joint torque limit [Nm]
+  latch_entry_velocity: false
+
+# Kinesthetic Teaching (Lead-Through) Simulation Parameters
+kinesthetic_teaching:
+  enabled: true                     # If true, controller reference is 0 (pure gravity comp) and operator guides robot via F_ext
+  K_operator_pos: [400.0, 400.0, 400.0]  # Operator hand translational stiffness [N/m]
+  K_operator_rot: [50.0, 50.0, 50.0]     # Operator hand rotational stiffness [Nm/rad]
+  D_operator_pos: [45.0, 45.0, 45.0]     # Operator hand translational damping [Ns/m]
+  D_operator_rot: [8.0, 8.0, 8.0]        # Operator hand rotational damping [Nms/rad]
+  max_force: 80.0                   # Human maximum continuous force limit [N]
+
+# Cartesian Impedance / Tracking Gains (Autonomous Tracking Fallback)
+impedance:
+  K_pos: [450.0, 450.0, 450.0]      # Translational stiffness [N/m]
+  K_rot: [60.0, 60.0, 60.0]         # Rotational stiffness [Nm/rad]
+  D_pos: [55.0, 55.0, 55.0]         # Translational damping [Ns/m]
+  D_rot: [10.0, 10.0, 10.0]         # Rotational damping [Nms/rad]
+
+# Nullspace Posture Regulation
+nullspace:
+  K_posture: [25.0, 25.0, 25.0, 25.0, 25.0, 25.0]  # Posture stiffness [Nm/rad]
+  D_posture: [6.0, 6.0, 6.0, 6.0, 6.0, 6.0]        # Posture damping [Nms/rad]
+  q_init: [1.57, -1.8, 1.8, -1.57, -1.57, 0.0]     # Initial joint seed for IK
+
+# Desired Harmonic Trajectory Parameters
+trajectory:
+  x:
+    center: 0.48
+    amp_cos1: 0.09
+    amp_cos2: -0.03
+  y:
+    center: 0.15
+    amp_sin1: 0.17
+  z:
+    center: 1.18
+    amp_cos1: -0.125
+    amp_cos2: 0.02

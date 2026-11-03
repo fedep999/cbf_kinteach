@@ -1,0 +1,91 @@
+function add_damping_visualizer()
+    model = 'Controller_damping_cbf';
+    load_system(model);
+    sub = [model '/task space controller'];
+    
+    term_path = [sub '/Terminator_CBF_Telem'];
+    pos = [1060, 3080, 1180, 3160];
+    if ~isempty(find_system(sub, 'SearchDepth', 1, 'Name', 'Terminator_CBF_Telem'))
+        pos = get_param(term_path, 'Position');
+        lh = get_param(term_path, 'LineHandles');
+        if lh.Inport ~= -1, delete_line(lh.Inport); end
+        delete_block(term_path);
+    end
+
+    vis_name = 'CBF_Telemetry_Visualizer';
+    vis_path = [sub '/' vis_name];
+    if ~isempty(find_system(sub, 'SearchDepth', 1, 'Name', vis_name))
+        lh = get_param(vis_path, 'LineHandles');
+        if isfield(lh, 'Inport') && lh.Inport ~= -1, delete_line(lh.Inport); end
+        delete_block(vis_path);
+    end
+
+    add_block('simulink/Ports & Subsystems/Subsystem', vis_path, ...
+              'Position', [pos(1), pos(2)-15, pos(1)+140, pos(2)+55]);
+
+    % Inside subsystem, delete default In1/Out1 if present
+    in1 = [vis_path '/In1'];
+    if ~isempty(find_system(vis_path, 'SearchDepth', 1, 'Name', 'In1')), delete_block(in1); end
+    out1 = [vis_path '/Out1'];
+    if ~isempty(find_system(vis_path, 'SearchDepth', 1, 'Name', 'Out1')), delete_block(out1); end
+
+    % Add Inport
+    add_block('simulink/Sources/In1', [vis_path '/telem'], 'Position', [30, 200, 60, 220]);
+
+    % Add Demux (8 channels)
+    % 1: is_active
+    % 2: zeta
+    % 3: dzeta
+    % 4: v_min
+    % 5: barrier_B
+    % 6: Lf_B
+    % 7: Lg_B
+    % 8: slack_eps
+    add_block('simulink/Signal Routing/Demux', [vis_path '/Demux'], ...
+              'Outputs', '8', 'Position', [120, 50, 125, 370]);
+    add_line(vis_path, 'telem/1', 'Demux/1', 'autorouting', 'on');
+
+    % Scope 1: Distance zeta(t)
+    add_block('simulink/Sinks/Scope', [vis_path '/Scope_Distance_zeta'], ...
+              'Position', [280, 55, 330, 85]);
+    add_line(vis_path, 'Demux/2', 'Scope_Distance_zeta/1', 'autorouting', 'on');
+
+    % Scope 2: Velocity & Safe Envelope (dzeta vs v_min)
+    add_block('simulink/Signal Routing/Mux', [vis_path '/Mux_PhaseSpace'], ...
+              'Inputs', '2', 'Position', [220, 100, 225, 150]);
+    add_line(vis_path, 'Demux/3', 'Mux_PhaseSpace/1', 'autorouting', 'on'); % dzeta
+    add_line(vis_path, 'Demux/4', 'Mux_PhaseSpace/2', 'autorouting', 'on'); % v_min
+    add_block('simulink/Sinks/Scope', [vis_path '/Scope_Velocity_vs_Envelope'], ...
+              'Position', [280, 110, 330, 140]);
+    add_line(vis_path, 'Mux_PhaseSpace/1', 'Scope_Velocity_vs_Envelope/1', 'autorouting', 'on');
+
+    % Scope 3: Barrier Function B(t)
+    add_block('simulink/Sinks/Scope', [vis_path '/Scope_Barrier_B'], ...
+              'Position', [280, 165, 330, 195]);
+    add_line(vis_path, 'Demux/5', 'Scope_Barrier_B/1', 'autorouting', 'on');
+
+    % Scope 4: Activity & Relaxation Slack (is_active, slack_eps)
+    add_block('simulink/Signal Routing/Mux', [vis_path '/Mux_ActSlack'], ...
+              'Inputs', '2', 'Position', [220, 215, 225, 265]);
+    add_line(vis_path, 'Demux/1', 'Mux_ActSlack/1', 'autorouting', 'on'); % is_active
+    add_line(vis_path, 'Demux/8', 'Mux_ActSlack/2', 'autorouting', 'on'); % slack_eps
+    add_block('simulink/Sinks/Scope', [vis_path '/Scope_Activity_and_Slack'], ...
+              'Position', [280, 225, 330, 255]);
+    add_line(vis_path, 'Mux_ActSlack/1', 'Scope_Activity_and_Slack/1', 'autorouting', 'on');
+
+    % Scope 5: Lie Derivatives (Lf_B, Lg_B)
+    add_block('simulink/Signal Routing/Mux', [vis_path '/Mux_Lie'], ...
+              'Inputs', '2', 'Position', [220, 280, 225, 330]);
+    add_line(vis_path, 'Demux/6', 'Mux_Lie/1', 'autorouting', 'on'); % Lf_B
+    add_line(vis_path, 'Demux/7', 'Mux_Lie/2', 'autorouting', 'on'); % Lg_B
+    add_block('simulink/Sinks/Scope', [vis_path '/Scope_Lie_Derivatives'], ...
+              'Position', [280, 290, 330, 320]);
+    add_line(vis_path, 'Mux_Lie/1', 'Scope_Lie_Derivatives/1', 'autorouting', 'on');
+
+    % Connect S-Function Outport 2 to visualizer Inport 1
+    add_line(sub, 'S-Function Damping CBF/2', [vis_name '/1'], 'autorouting', 'on');
+
+    save_system(model);
+    bdclose(model);
+    disp('Successfully created CBF_Telemetry_Visualizer in Controller_damping_cbf!');
+end
