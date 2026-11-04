@@ -76,7 +76,7 @@ If ROS 2 is not installed on the system, Pinocchio can be installed via:
 - **Making CMake Find Local Pinocchio**:
   Once installed in `./pinocchio_install`, make CMake discover it using any of the following methods:
 
-  - **Method 1: Export environment variables (Recommended for current session)**
+  - **Method 1: Export environment variables**
     ```bash
     export CMAKE_PREFIX_PATH="$(pwd)/pinocchio_install:$CMAKE_PREFIX_PATH"
     export LD_LIBRARY_PATH="$(pwd)/pinocchio_install/lib:$LD_LIBRARY_PATH"
