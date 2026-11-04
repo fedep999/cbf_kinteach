@@ -70,7 +70,7 @@ If ROS 2 is not installed on the system, Pinocchio can be installed via:
   cmake --install .
 
   # Return to the root folder
-  cd ../..
+  cd ../../cbf_kinteach
   ```
 
 - **Making CMake Find Local Pinocchio**:
