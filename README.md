@@ -38,6 +38,24 @@ If ROS 2 is not installed on the system, Pinocchio can be installed via:
   git clone --recursive https://github.com/stack-of-tasks/pinocchio.git
   cd pinocchio
 
+  > [!TIP]
+  > **If your machine has CMake 3.16 (e.g. Ubuntu 20.04):**
+  > Upstream Pinocchio requires CMake >= 3.22. You can upgrade CMake in seconds without `sudo` via:
+  > ```bash
+  > pip install --upgrade cmake
+  > export PATH="$HOME/.local/bin:$PATH"
+  > ```
+  > Or download the official prebuilt binary tarball:
+  > ```bash
+  > wget https://github.com/Kitware/CMake/releases/download/v3.28.3/cmake-3.28.3-linux-x86_64.tar.gz
+  > tar -xzf cmake-3.28.3-linux-x86_64.tar.gz
+  > export PATH="$(pwd)/cmake-3.28.3-linux-x86_64/bin:$PATH"
+  > ```
+  > Alternatively, build older Pinocchio release `v2.6.20` which supports CMake 3.16:
+  > ```bash
+  > cd pinocchio && git checkout v2.6.20 && git submodule update --init --recursive && cd ..
+  > ```
+
   # 3. Configure build with a local installation prefix
   mkdir build && cd build
   cmake .. \
