@@ -25,77 +25,79 @@ sudo apt-get install -y \
     libyaml-cpp-dev
 ```
 
-#### Installing Pinocchio
-If ROS 2 is not installed on the system, Pinocchio can be installed via:
+#### Installing Pinocchio & yaml-cpp Locally (No Root Required)
 
-- **Local Build & Installation in Current Folder (No Root Required)**:
-  You can clone, compile, and install Pinocchio into a local `pinocchio_install/` prefix in the current directory:
-  ```bash
-  # 1. Install prerequisites (Boost and URDF DOM)
-  sudo apt-get install -y libboost-all-dev liburdfdom-dev
+If system packages or root privileges are unavailable, you can build and install both **Pinocchio** and **yaml-cpp** locally in the workspace (for example in `src/`):
 
-  # 2. Clone Pinocchio repository into the current folder
-  git clone --recursive https://github.com/stack-of-tasks/pinocchio.git
-  cd pinocchio
-  ```
-  >[!TIP]
-  **If your machine has CMake 3.16 (e.g. Ubuntu 20.04):**
-  Upstream Pinocchio requires CMake >= 3.22. You can upgrade CMake in seconds without `sudo` via:
-  ```bash
-  pip install --upgrade cmake
-  export PATH="$HOME/.local/bin:$PATH"
-  ```
-  Or download the official prebuilt binary tarball:
-  ```bash
-  wget https://github.com/Kitware/CMake/releases/download/v3.28.3/cmake-3.28.3-linux-x86_64.tar.gz
-  tar -xzf cmake-3.28.3-linux-x86_64.tar.gz
-  export PATH="$(pwd)/cmake-3.28.3-linux-x86_64/bin:$PATH"
-  ```
-  Alternatively, build older Pinocchio release `v2.6.20` which supports CMake 3.16:
-  ```bash
-  cd pinocchio && git checkout v2.6.20 && git submodule update --init --recursive
-  ```
-  ```bash
-  # 3. Configure build with a local installation prefix
-  mkdir build && cd build
-  cmake .. \
-      -DCMAKE_BUILD_TYPE=Release \
-      -DCMAKE_INSTALL_PREFIX="$(pwd)/../../pinocchio_install" \
-      -DBUILD_WITH_COLLISION_SUPPORT=OFF \
-      -DBUILD_UNIT_TESTS=OFF \
-      -DBUILD_PYTHON_INTERFACE=OFF
+##### 1. Pinocchio
+```bash
+# Clone Pinocchio into current folder
+git clone --recursive https://github.com/stack-of-tasks/pinocchio.git
+cd pinocchio
 
-  # 4. Compile and install locally
+# Note: If your machine has CMake 3.16 (e.g. Ubuntu 20.04), checkout v2.6.20:
+# git checkout v2.6.20 && git submodule update --init --recursive
+
+# Configure and install locally
+mkdir -p build && cd build
+cmake .. \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_INSTALL_PREFIX="$(pwd)/../../pinocchio_install" \
+    -DBUILD_WITH_COLLISION_SUPPORT=OFF \
+    -DBUILD_UNIT_TESTS=OFF \
+    -DBUILD_PYTHON_INTERFACE=OFF
+
+cmake --build . -j$(nproc)
+cmake --install .
+cd ../..
+```
+
+##### 2. yaml-cpp
+```bash
+# Clone yaml-cpp into current folder
+git clone https://github.com/jbeder/yaml-cpp.git
+cd yaml-cpp
+git checkout 0.8.0
+
+# Configure and install locally
+mkdir -p build && cd build
+cmake .. \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_INSTALL_PREFIX="$(pwd)/../../yaml_cpp_install" \
+    -DYAML_BUILD_SHARED_LIBS=ON \
+    -DYAML_CPP_BUILD_TESTS=OFF \
+    -DYAML_CPP_BUILD_TOOLS=OFF
+
+cmake --build . -j$(nproc)
+cmake --install .
+cd ../..
+```
+
+##### Making CMake Find Local Pinocchio & yaml-cpp
+When both libraries are installed locally, tell CMake where to find them using either of the following approaches:
+
+- **Option A: Export Environment Variables (Recommended)**
+  ```bash
+  export CMAKE_PREFIX_PATH="$(pwd)/pinocchio_install;$(pwd)/yaml_cpp_install:$CMAKE_PREFIX_PATH"
+  export LD_LIBRARY_PATH="$(pwd)/pinocchio_install/lib:$(pwd)/yaml_cpp_install/lib:$LD_LIBRARY_PATH"
+  ```
+- **Option B: Pass `CMAKE_PREFIX_PATH` to CMake directly**
+  ```bash
+  mkdir -p build && cd build
+  cmake .. -DCMAKE_BUILD_TYPE=Release \
+      -DCMAKE_PREFIX_PATH="$(pwd)/../pinocchio_install;$(pwd)/../yaml_cpp_install"
   cmake --build . -j$(nproc)
-  cmake --install .
-
-  # Return to the root folder
-  cd ../../cbf_kinteach
+  ```
+- **Option C: Colcon (ROS 2)**
+  ```bash
+  colcon build --symlink-install --cmake-args \
+      -DCMAKE_PREFIX_PATH="$(pwd)/src/pinocchio_install;$(pwd)/src/yaml_cpp_install"
   ```
 
-- **Making CMake Find Local Pinocchio**:
-  Once installed in `./pinocchio_install`, make CMake discover it using any of the following methods:
+*(Tip: You can also choose to install both into a single shared prefix such as `local_install/` by using `-DCMAKE_INSTALL_PREFIX="$(pwd)/../../local_install"` for both packages).*
 
-  - **Method 1: Export environment variables**
-    ```bash
-    export CMAKE_PREFIX_PATH="$(pwd)/pinocchio_install:$CMAKE_PREFIX_PATH"
-    export LD_LIBRARY_PATH="$(pwd)/pinocchio_install/lib:$LD_LIBRARY_PATH"
-    ```
-  - **Method 2: Pass `CMAKE_PREFIX_PATH` during CMake configuration**
-    ```bash
-    mkdir -p build && cd build
-    cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$(pwd)/../pinocchio_install"
-    ```
-  - **Method 3: Pass `pinocchio_DIR` directly**
-    ```bash
-    cmake .. -DCMAKE_BUILD_TYPE=Release -Dpinocchio_DIR="$(pwd)/../pinocchio_install/lib/cmake/pinocchio"
-    ```
-  - **For ROS 2 / Colcon**:
-    ```bash
-    colcon build --symlink-install --cmake-args -DCMAKE_PREFIX_PATH="$(pwd)/pinocchio_install"
-    ```
-
-- **robotpkg APT repository** (System-wide on Ubuntu):
+#### Installing Pinocchio via System Package Managers
+If installing system-wide:
   ```bash
   sudo apt-get install -y -qq gnupg2 curl
   curl http://robotpkg.openrobots.org/packages/debian/robotpkg.key | sudo apt-key add -

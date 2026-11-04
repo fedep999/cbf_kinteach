@@ -235,3 +235,6 @@ log/
 # Local dependency installations
 pinocchio/
 pinocchio_install/
+yaml-cpp/
+yaml_cpp_install/
+local_install/
