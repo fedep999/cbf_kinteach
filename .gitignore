@@ -231,3 +231,7 @@ slprj/
 # Colcon / ROS build artifacts
 install/
 log/
+
+# Local dependency installations
+pinocchio/
+pinocchio_install/

@@ -27,7 +27,57 @@ sudo apt-get install -y \
 
 #### Installing Pinocchio
 If ROS 2 is not installed on the system, Pinocchio can be installed via:
-- **robotpkg APT repository** (recommended for Ubuntu):
+
+- **Local Build & Installation in Current Folder (No Root Required)**:
+  You can clone, compile, and install Pinocchio into a local `pinocchio_install/` prefix in the current directory:
+  ```bash
+  # 1. Install prerequisites (Boost and URDF DOM)
+  sudo apt-get install -y libboost-all-dev liburdfdom-dev
+
+  # 2. Clone Pinocchio repository into the current folder
+  git clone --recursive https://github.com/stack-of-tasks/pinocchio.git
+  cd pinocchio
+
+  # 3. Configure build with a local installation prefix
+  mkdir build && cd build
+  cmake .. \
+      -DCMAKE_BUILD_TYPE=Release \
+      -DCMAKE_INSTALL_PREFIX="$(pwd)/../../pinocchio_install" \
+      -DBUILD_WITH_COLLISION_SUPPORT=OFF \
+      -DBUILD_UNIT_TESTS=OFF \
+      -DBUILD_PYTHON_INTERFACE=OFF
+
+  # 4. Compile and install locally
+  cmake --build . -j$(nproc)
+  cmake --install .
+
+  # Return to the root folder
+  cd ../..
+  ```
+
+- **Making CMake Find Local Pinocchio**:
+  Once installed in `./pinocchio_install`, make CMake discover it using any of the following methods:
+
+  - **Method 1: Export environment variables (Recommended for current session)**
+    ```bash
+    export CMAKE_PREFIX_PATH="$(pwd)/pinocchio_install:$CMAKE_PREFIX_PATH"
+    export LD_LIBRARY_PATH="$(pwd)/pinocchio_install/lib:$LD_LIBRARY_PATH"
+    ```
+  - **Method 2: Pass `CMAKE_PREFIX_PATH` during CMake configuration**
+    ```bash
+    mkdir -p build && cd build
+    cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$(pwd)/../pinocchio_install"
+    ```
+  - **Method 3: Pass `pinocchio_DIR` directly**
+    ```bash
+    cmake .. -DCMAKE_BUILD_TYPE=Release -Dpinocchio_DIR="$(pwd)/../pinocchio_install/lib/cmake/pinocchio"
+    ```
+  - **For ROS 2 / Colcon**:
+    ```bash
+    colcon build --symlink-install --cmake-args -DCMAKE_PREFIX_PATH="$(pwd)/pinocchio_install"
+    ```
+
+- **robotpkg APT repository** (System-wide on Ubuntu):
   ```bash
   sudo apt-get install -y -qq gnupg2 curl
   curl http://robotpkg.openrobots.org/packages/debian/robotpkg.key | sudo apt-key add -
@@ -61,9 +111,9 @@ cmake .. -DCMAKE_BUILD_TYPE=Release
 cmake --build . -j$(nproc)
 ```
 
-> **Note**: If Pinocchio was installed in a custom location (e.g., `/opt/openrobots`), pass its prefix to CMake:
+> **Note**: If Pinocchio was installed in a custom or local location (e.g., local `pinocchio_install/` or `/opt/openrobots`), pass its prefix to CMake:
 > ```bash
-> cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="/opt/openrobots"
+> cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$(pwd)/../pinocchio_install"
 > ```
 
 ### Build Artifacts
