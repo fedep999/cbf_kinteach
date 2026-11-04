@@ -119,8 +119,8 @@ If installing system-wide:
 The repository root includes a top-level `CMakeLists.txt` configuring all packages in proper dependency order.
 
 ### Step 1: Configure and Build
-From the repository root directory:
 ```bash
+cd path/to/workspace/cbf_kinteach
 # Create and enter build directory
 mkdir build && cd build
 
@@ -133,7 +133,7 @@ cmake --build . -j$(nproc)
 
 > **Note**: If Pinocchio was installed in a custom or local location (e.g., local `pinocchio_install/` or `/opt/openrobots`), pass its prefix to CMake:
 > ```bash
-> cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$(pwd)/../pinocchio_install"
+> cmake .. -DCMAKE_BUILD_TYPE=Release       -DCMAKE_PREFIX_PATH="$(pwd)/../../pinocchio_install;$(pwd)/../../yaml_cpp_install"
 > ```
 
 ### Build Artifacts
