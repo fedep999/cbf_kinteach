@@ -28,8 +28,32 @@ if(Matlab_FOUND)
     ${EIGEN3_INCLUDE_DIR}
     ${Matlab_INCLUDE_DIRS}
     ${Matlab_ROOT_DIR}/simulink/include
-    /opt/ros/jazzy/include/pinocchio/deprecated
   )
+  if(EXISTS "/opt/ros/jazzy/include/pinocchio/deprecated")
+    target_include_directories(sfun_torque_cbf PRIVATE /opt/ros/jazzy/include/pinocchio/deprecated)
+  endif()
+
+  # Configure runtime search paths (RPATH) so MEX binary can locate shared libraries
+  set(_mex_rpaths "${CMAKE_BINARY_DIR}/lib;$ORIGIN/../build/lib")
+  foreach(_prefix ${CMAKE_PREFIX_PATH})
+    if(EXISTS "${_prefix}/lib")
+      list(APPEND _mex_rpaths "${_prefix}/lib")
+    endif()
+  endforeach()
+  set_target_properties(sfun_torque_cbf PROPERTIES
+    BUILD_RPATH "${_mex_rpaths}"
+    INSTALL_RPATH "$ORIGIN/../build/lib"
+  )
+
+  # Copy compiled MEX binary directly into this package folder for MATLAB/Simulink
+  add_custom_command(
+    TARGET sfun_torque_cbf POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            $<TARGET_FILE:sfun_torque_cbf>
+            "${CMAKE_CURRENT_SOURCE_DIR}/"
+    COMMENT "Copying sfun_torque_cbf MEX binary to ${CMAKE_CURRENT_SOURCE_DIR}"
+  )
+
   install(
     TARGETS sfun_torque_cbf
     DESTINATION share/${PROJECT_NAME}
