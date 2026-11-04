@@ -53,7 +53,7 @@ If ROS 2 is not installed on the system, Pinocchio can be installed via:
   ```
   Alternatively, build older Pinocchio release `v2.6.20` which supports CMake 3.16:
   ```bash
-  cd pinocchio && git checkout v2.6.20 && git submodule update --init --recursive && cd ..
+  cd pinocchio && git checkout v2.6.20 && git submodule update --init --recursive
   ```
   ```bash
   # 3. Configure build with a local installation prefix
