@@ -2,7 +2,7 @@
 % Franka Emika Panda — Damping CBF Simulation Initialization
 % ==============================================================================
 
-clearvars -except FASTEXECUTION;
+% clearvars -except FASTEXECUTION;
 close all;
 
 % Ensure MEX binary is on path
@@ -20,9 +20,11 @@ Kn = 0 * ones(7,1);
 Dn = 20 * ones(7,1);
 
 % Initial and Home Configuration for simulation
-q_init = [0 -pi/4 0 -(3/4)*pi 0 pi/2 pi/4]';
-q_home = [0.003542735427650; -0.076954344513307; -0.003006835131443; ...
-          -1.362053944077202; -5.624494697578509e-04; 1.279919277568267; 0.786445509714290];
+% q_init = [0 -pi/4 0 -(3/4)*pi 0 pi/2 pi/4]';
+q_init = [0 0  0  -(2/4)*pi  0  pi/2  -pi/4]'; 
+% q_home = [0.003542735427650; -0.076954344513307; -0.003006835131443; ...
+%           -1.362053944077202; -5.624494697578509e-04; 1.279919277568267; 0.786445509714290];
+q_home = q_init;
 
 H_home = getTransform(Franka_robot, q_home, 'panda_link8', 'panda_link0');
 
@@ -46,17 +48,49 @@ xTableHeight = 0.106 - 0.004; % Table/barrier surface height [m] (0.102 m)
 plane_normal = [0.0; 0.0; 1.0];                   % Hyperplane normal n_hp
 plane_offset = [0.48; 0.16; xTableHeight];        % Hyperplane offset
 
-cbf_p_ths    = 0.30;    % Distance activation threshold [m] (p_ths > 0)
-cbf_v_ths    = -0.002;  % Terminal contact velocity threshold [m/s] (v_ths < 0)
-cbf_v_0      = -0.35;   % Nominal entry velocity [m/s] (v_0 < v_ths < 0)
-cbf_gamma    = 2.0;    % Class-K decay gain [1/s]
-cbf_d_max    = 300.0;   % Maximum allowable damping [Ns/m]
+cbf_p_ths    = 0.250;    % Distance activation threshold [m] (p_ths > 0)
+cbf_v_ths    = -0.02;  % Terminal contact velocity threshold [m/s] (v_ths < 0)
+cbf_v_0      = -0.5;   % Nominal entry velocity [m/s] (v_0 < v_ths < 0)
+cbf_gamma    = 12.0;    % Class-K decay gain [1/s]
+cbf_d_max    = 350.0;   % Maximum allowable damping [Ns/m]
 cbf_w_lin    = 1e6;     % Slack linear penalty weight
 cbf_w_quad   = 1e4;     % Slack quadratic penalty weight
+cbf_rho_eff  = 3.6;
+cbf_kappa = 0.85 * cbf_d_max / cbf_rho_eff;   % ≈ 58 1/s  (safe damping bandwidth ≈ 9 Hz)
 
-% Packed parameters for sfun_damping_cbf:
-% [p_ths, v_ths, v_0, gamma, d_max, w_lin, w_quad, nx, ny, nz, ox, oy, oz]
+% Entry-velocity latch (one-sided): entering the zone FASTER than v_0 restarts the
+% envelope from the entry speed (smooth onset, B = 0 at entry); slower entries keep v_0
+% (no CBF damping at entry).
+cbf_latch_entry  = 0;      % 1 = enabled, 0 = disabled
+cbf_zone_hyst    = 0.005;  % Zone exit hysteresis [m]: no re-latch when hovering around p_ths
+cbf_latch_alpha  = 0.2;    % EMA coefficient (0,1] of the latched velocity (0.2 @ 1 kHz ~ 5 ms)
+
+% Impedance decoupling from the plane normal (decouple_damping_impedance.m):
+% 1 = the Cartesian spring + lateral damping produce zero acceleration along the plane
+%     normal (only the CBF damping acts along n; the CBF sees no nominal normal force).
+% 0 = original impedance controller.
+cbf_stiff_decouple = 1;
+
+% Packed parameters for sfun_damping_cbf (16x1):
+% [p_ths, v_ths, v_0, gamma, d_max, w_lin, w_quad, nx, ny, nz, ox, oy, oz,
+%  latch_entry_velocity, zone_exit_hysteresis, latch_velocity_filter_alpha]
 cbf_damping_params = [cbf_p_ths; cbf_v_ths; cbf_v_0; cbf_gamma; cbf_d_max; ...
-                      cbf_w_lin; cbf_w_quad; plane_normal; plane_offset];
+                      cbf_w_lin; cbf_w_quad; plane_normal; plane_offset; ...
+                      cbf_latch_entry; cbf_zone_hyst; cbf_latch_alpha];
+% Savitzky-Golay force filter (aggressive)
+sg_p    = 2;        % polynomial order: 1 = strongest smoothing, 2 = keeps peaks better
+sg_N    = 51;      % window length (odd): 101 samples = 100 ms span at 1 kHz
+sg_mode = 'centered';   % 'centered' or 'causal'
 
+B = sgolay(sg_p, sg_N);                 % N x N; row i estimates sample i of the window
+switch sg_mode
+    case 'centered'
+        b_sg = B((sg_N+1)/2, :);        % symmetric; delay = (N-1)/2 samples
+    case 'causal'
+        b_sg = fliplr(B(end, :));       % endpoint estimate; b_sg(1) * newest sample
+end
+
+fprintf('SG filter: N=%d, p=%d, %s, noise gain = %.4f, delay = %g ms\n', ...
+        sg_N, sg_p, sg_mode, sum(b_sg.^2), ...
+        strcmp(sg_mode,'centered') * (sg_N-1)/2 * 1e3 * 0.001);
 disp('Damping CBF Simulation Initialized successfully.');

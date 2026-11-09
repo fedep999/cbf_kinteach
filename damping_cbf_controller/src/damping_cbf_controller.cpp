@@ -48,9 +48,27 @@ namespace damping_cbf
     {
       throw std::invalid_argument("slack_quadratic_penalty must be strictly positive.");
     }
+    if (config.zone_exit_hysteresis < 0.0)
+    {
+      throw std::invalid_argument("zone_exit_hysteresis must be non-negative.");
+    }
+    if (!(config.latch_velocity_filter_alpha > 0.0 && config.latch_velocity_filter_alpha <= 1.0))
+    {
+      throw std::invalid_argument("latch_velocity_filter_alpha must be in (0, 1].");
+    }
     config_ = config;
-    active_v0_ = config_.v_0;
-    was_in_zone_ = false;
+    // Entry-latch state is intentionally preserved (see header): only the envelope
+    // velocity is refreshed, so a changed v_0 / latch flag takes effect immediately.
+    updateActiveV0();
+  }
+
+  void DampingCBFController::updateActiveV0()
+  {
+    // One-sided latch: only an entry faster (more negative) than v_0 replaces v_0.
+    // min(entry, v_0) <= v_0 < v_ths, so the envelope stays well defined.
+    active_v0_ = (config_.latch_entry_velocity && has_entry_velocity_)
+                     ? std::min(entry_dzeta_, config_.v_0)
+                     : config_.v_0;
   }
 
   void DampingCBFController::setHyperplane(const Hyperplane &plane)
@@ -95,8 +113,12 @@ namespace damping_cbf
 
   void DampingCBFController::resetEntryState()
   {
-    active_v0_ = config_.v_0;
     was_in_zone_ = false;
+    has_entry_velocity_ = false;
+    entry_dzeta_ = 0.0;
+    dzeta_filt_init_ = false;
+    dzeta_filt_ = 0.0;
+    updateActiveV0();
   }
 
   double DampingCBFController::evaluateProfileH(double u) const
@@ -196,24 +218,35 @@ namespace damping_cbf
     res.dzeta = dzeta;
     res.rho = rho;
 
-    // Handle optional latching of entry velocity v_0 when crossing zeta <= p_ths
-    const bool in_zone = (zeta <= config_.p_ths);
-    if (in_zone && !was_in_zone_ && config_.latch_entry_velocity)
+    // Velocity sampled by the entry latch (EMA, does not affect the QP itself)
+    if (!dzeta_filt_init_)
     {
-      if (dzeta < config_.v_ths)
-      {
-        active_v0_ = dzeta;
-      }
-      else
-      {
-        active_v0_ = config_.v_0;
-      }
+      dzeta_filt_ = dzeta;
+      dzeta_filt_init_ = true;
+    }
+    else
+    {
+      dzeta_filt_ += config_.latch_velocity_filter_alpha * (dzeta - dzeta_filt_);
+    }
+
+    // Zone membership with exit hysteresis: enter at zeta <= p_ths,
+    // leave only at zeta > p_ths + zone_exit_hysteresis
+    const bool in_zone = was_in_zone_
+                             ? (zeta <= config_.p_ths + config_.zone_exit_hysteresis)
+                             : (zeta <= config_.p_ths);
+    if (in_zone && !was_in_zone_)
+    {
+      entry_dzeta_ = dzeta_filt_;
+      has_entry_velocity_ = true;
     }
     else if (!in_zone)
     {
-      active_v0_ = config_.v_0;
+      has_entry_velocity_ = false;
     }
     was_in_zone_ = in_zone;
+
+    // One-sided latch (if enabled): v_0 <- min(entry velocity, v_0)
+    updateActiveV0();
 
     res.v_min = computeVelocityEnvelope(zeta);
     res.dv_min_dzeta = computeVelocityEnvelopeDerivative(zeta);
@@ -223,9 +256,11 @@ namespace damping_cbf
     res.Lg_B = -dzeta / rho;
 
     // Activation criteria:
-    // 1) 0 <= zeta(t) <= p_ths (inside braking zone)
+    // 1) zeta(t) <= p_ths (inside braking zone, INCLUDING zeta < 0: the controller must
+    //    stay active at/below the surface, otherwise damping drops to zero exactly at contact;
+    //    for zeta < 0 the envelope is clamped to v_min = v_ths)
     // 2) dzeta(t) < v_ths < 0 (approaching faster than terminal contact speed threshold)
-    if (zeta <= config_.p_ths && zeta >= 0.0 && dzeta < config_.v_ths)
+    if (zeta <= config_.p_ths && dzeta < config_.v_ths)
     {
       res.is_active = true;
 
@@ -384,7 +419,8 @@ namespace damping_cbf
     {
       const double zeta_i = res.zetas(i);
       const double dzeta_i = res.dzetas(i);
-      if (zeta_i <= config_.p_ths && zeta_i >= 0.0 && dzeta_i < config_.v_ths)
+      // Stay active below the surface (zeta_i < 0) as well: see solveDampingQP
+      if (zeta_i <= config_.p_ths && dzeta_i < config_.v_ths)
       {
         active_rows.push_back(i);
         if (zeta_i < min_zeta_act)

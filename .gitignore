@@ -238,3 +238,5 @@ pinocchio_install/
 yaml-cpp/
 yaml_cpp_install/
 local_install/
+*.mat
+*_rtw/

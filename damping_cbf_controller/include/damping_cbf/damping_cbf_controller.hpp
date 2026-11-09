@@ -28,7 +28,14 @@ namespace damping_cbf
     double d_max = 300.0;                          ///< Maximum allowable damping factor [Ns/m]
     double slack_linear_penalty = 1e6;             ///< Exact L1 slack penalty weight in 2D QP
     double slack_quadratic_penalty = 1e4;          ///< Quadratic L2 slack penalty weight in 2D QP
-    bool latch_entry_velocity = false;             ///< If true, latches v_0 = dzeta when entering zeta <= p_ths
+    bool latch_entry_velocity = false;             ///< If true, one-sided latch on zone entry: v_0 <- min(dzeta_entry, v_0),
+                                                   ///< i.e. only entries FASTER than v_0 reshape the envelope (B = 0 at entry,
+                                                   ///< smooth onset); slower entries keep v_0 (no CBF damping at entry)
+    double zone_exit_hysteresis = 0.0;             ///< Zone is left only when zeta > p_ths + zone_exit_hysteresis [m] (>= 0);
+                                                   ///< avoids re-latching when hovering around p_ths
+    double latch_velocity_filter_alpha = 1.0;      ///< EMA coefficient in (0, 1] for the velocity sampled by the latch
+                                                   ///< (1 = unfiltered; e.g. 0.2 at 1 kHz ~ 5 ms time constant).
+                                                   ///< Affects ONLY the latched value, never the QP velocity
     bool compensate_external_force = true;         ///< If true, includes external wrench F_ext in a_drift (if false, only nominal impedance forces are included)
     ProfileType profile = ProfileType::SMOOTHSTEP; ///< Shaping function h(u)
 
@@ -103,7 +110,9 @@ namespace damping_cbf
     explicit DampingCBFController(const ControllerConfig &config,
                                   const std::vector<Hyperplane> &planes);
 
-    /// Update controller configuration
+    /// Update controller configuration.
+    /// Does NOT reset the entry-latch state, so it is safe to call every control cycle
+    /// (e.g. from an S-function with tunable parameters). Use resetEntryState() to reset it.
     void setConfig(const ControllerConfig &config);
     const ControllerConfig &getConfig() const { return config_; }
 
@@ -280,11 +289,18 @@ namespace damping_cbf
         Eigen::VectorXd *d_opt_out = nullptr) const;
 
   private:
+    /// Recompute active_v0_ from config_ and the latched entry velocity
+    void updateActiveV0();
+
     ControllerConfig config_;
     Hyperplane plane_;
     std::vector<Hyperplane> planes_;
-    double active_v0_ = -0.35;
-    bool was_in_zone_ = false;
+    double active_v0_ = -0.35;          ///< Envelope entry velocity currently in use
+    bool was_in_zone_ = false;          ///< Zone membership at the previous call (with exit hysteresis)
+    bool has_entry_velocity_ = false;   ///< True while inside the zone after an entry was recorded
+    double entry_dzeta_ = 0.0;          ///< (Filtered) normal velocity recorded at zone entry
+    bool dzeta_filt_init_ = false;      ///< Latch-velocity filter initialised
+    double dzeta_filt_ = 0.0;           ///< Latch-velocity filter state
     std::function<double(double)> custom_h_;
     std::function<double(double)> custom_H_;
   };

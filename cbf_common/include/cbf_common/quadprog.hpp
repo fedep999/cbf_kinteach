@@ -134,6 +134,7 @@ inline double solve_quadprog(const Eigen::MatrixXd& G,
     const Eigen::VectorXd n_plus = CI.col(most_violated_k);
     const double c0_plus = ci0(most_violated_k);
 
+    double u_plus = 0.0;  // multiplier of the constraint being added
     // 4. Dual active-set inner loop: step towards the violated constraint hyperplane
     while (true) {
       const Eigen::Index q_ineq = static_cast<Eigen::Index>(active_ineq.size());
@@ -142,7 +143,12 @@ inline double solve_quadprog(const Eigen::MatrixXd& G,
       Eigen::VectorXd z(n);
       Eigen::VectorXd r(q_total);
 
-      if (q_total == 0) {
+      if (q_total >= n) {
+        // Active set already spans R^n: n_plus is linearly dependent -> no primal direction.
+        z.setZero();
+        const Eigen::MatrixXd N_A = buildActiveNormals();
+        r = N_A.colPivHouseholderQr().solve(n_plus);
+      } else if (q_total == 0) {
         // Unconstrained step: z = G^{-1} * n_plus
         z = G_inv * n_plus;
       } else {
@@ -164,7 +170,7 @@ inline double solve_quadprog(const Eigen::MatrixXd& G,
 
       // Check if step direction z is non-zero
       double t1 = inf;
-      if (z_norm_sq > kEps * kEps) {
+      if (z_norm_sq > kEps * kEps * std::max(1.0, n_plus.squaredNorm())) {
         const double n_plus_dot_z = n_plus.dot(z);
         if (n_plus_dot_z > kEps) {
           t1 = -(n_plus.dot(x) + c0_plus) / n_plus_dot_z;
@@ -204,7 +210,7 @@ inline double solve_quadprog(const Eigen::MatrixXd& G,
         if (q_ineq > 0) {
           u_new.head(q_ineq) = u_ineq;
         }
-        u_new(q_ineq) = t1;
+        u_new(q_ineq) = u_plus + t1;
         u_ineq = u_new;
         break; // Inner loop finished, check next violation
       }
@@ -214,6 +220,7 @@ inline double solve_quadprog(const Eigen::MatrixXd& G,
       if (q_ineq > 0) {
         u_ineq -= t2 * r.tail(q_ineq);
       }
+      u_plus += t2;
 
       // Drop constraint at drop_idx from the active set
       if (drop_idx >= 0 && drop_idx < q_ineq) {

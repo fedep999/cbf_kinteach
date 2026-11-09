@@ -4,9 +4,15 @@
 #include "cbf_common/profiles.hpp"
 #include "cbf_common/quadprog.hpp"
 
+// Simulink Coder builds pass -DRT on the command line, which collides with the template
+// parameter named `RT` in Boost.Math (pulled in by Pinocchio). Hide it while including
+// Pinocchio/Boost and restore it afterwards.
+#pragma push_macro("RT")
+#undef RT
 #include <pinocchio/fwd.hpp>
 #include <pinocchio/multibody/model.hpp>
 #include <pinocchio/multibody/data.hpp>
+#pragma pop_macro("RT")
 
 #include <Eigen/Dense>
 #include <functional>
@@ -33,19 +39,33 @@ namespace torque_cbf
     double gamma = 15.0;                           ///< CBF class-K decay gain [1/s] (gamma > 0)
     double w_slack = 1e4;                          ///< Slack quadratic penalty weight w_delta
     double w_lin = 1e6;                            ///< Slack linear penalty weight w_lin
-    bool latch_entry_velocity = false;             ///< If true, latches entry velocity upon zone entry
+    bool latch_entry_velocity = false;             ///< If true, one-sided latch on zone entry: v_0 <- min(dzeta_entry, v_0),
+                                                   ///< i.e. only entries FASTER than v_0 reshape the envelope (B = 0 at entry,
+                                                   ///< smooth onset); slower entries keep v_0 (no CBF action at entry)
+    double zone_exit_hysteresis = 0.0;             ///< Latch zone is left only when zeta > p_ths + zone_exit_hysteresis [m] (>= 0);
+                                                   ///< avoids re-latching when hovering around p_ths
+    double latch_velocity_filter_alpha = 1.0;      ///< EMA coefficient in (0, 1] for the velocity sampled by the latch
+                                                   ///< (1 = unfiltered; e.g. 0.2 at 1 kHz ~ 5 ms time constant).
+                                                   ///< Affects ONLY the latched value, never the QP velocity
     bool compensate_external_force = true;         ///< If true, includes F_ext in a_drift; if false, neglects external force impact on a_drift
     ProfileType profile = ProfileType::SMOOTHSTEP; ///< Velocity shaping profile function h(u)
 
     /// Kinesthetic teaching / passivity parameters
     double dt = 0.001;             ///< Control cycle period [s] for velocity braking cap (rho/dt)*|dzeta|
-    bool enforce_passivity = true; ///< If true, caps f_n to prevent pushback (f_n <= (rho/dt)*|dzeta| if dzeta < 0, else 0)
+    bool enforce_passivity = true; ///< If true, caps f_n to prevent pushback:
+                                   ///< f_n <= rho*(|dzeta|/dt + max(0,-a_drift)) if dzeta <= 0, else 0
+    bool brake_cap_include_drift = true; ///< If true, the cap also allows cancelling the approaching drift
+                                         ///< acceleration (e.g. the estimated human push) within the cycle, so the
+                                         ///< robot can be held at v_ths / at rest instead of creeping at a_drift*dt.
+                                         ///< If false: legacy cap f_n <= (rho/dt)*|dzeta|
 
     /// Joint torque limits in Nm (optional, size n)
     Eigen::VectorXd tau_min;
     Eigen::VectorXd tau_max;
     double default_tau_limit = 150.0;         ///< Default symmetric limit [-limit, limit] if tau_min/max empty
-    bool enforce_total_torque_limits = false; ///< If true, bounds tau_nom + tau_cbf in [tau_min, tau_max]
+    bool enforce_total_torque_limits = false; ///< If true, bounds g + tau_nom + tau_cbf in [tau_min, tau_max]
+                                              ///< (bounds on tau_cbf relaxed to always contain 0, so the QP stays
+                                              ///< feasible when g + tau_nom alone is already out of limits)
   };
 
   /**
@@ -117,7 +137,7 @@ namespace torque_cbf
    *   min_{f_n in R^m, delta >= 0} 0.5 * ||f_n||_2^2 + 0.5 * w_slack * delta^2 + w_lin * delta
    *   subject to
    *     A_cbf(q) * f_n + 1_m * delta >= b_cbf(q, dq, F_ext)
-   *     0 <= f_{n,i} <= (rho_i / dt) * |dzeta_i|  (if dzeta_i < 0, else 0: Strictly Passive / No Pushback)
+   *     0 <= f_{n,i} <= rho_i * (|dzeta_i| / dt + max(0, -a_drift_i))  (if dzeta_i <= 0, else 0: No Pushback)
    *     tau_min <= tau_nom + J^T * N_6 * f_n <= tau_max
    *     delta >= 0
    *
@@ -137,10 +157,13 @@ namespace torque_cbf
                                  const std::vector<Hyperplane> &planes);
 
     /// Update controller configuration
+    /// Update configuration. Does NOT reset the entry-latch state, so it is safe to call
+    /// every control cycle (e.g. from an S-function). Use resetEntryState() to reset it.
     void setConfig(const TorqueCBFConfig &config);
     const TorqueCBFConfig &getConfig() const { return config_; }
 
-    /// Hyperplane setters and getters
+    /// Hyperplane setters and getters. The entry-latch state is reset only if the
+    /// (normalized) planes actually change, so re-setting identical planes every cycle is safe.
     void setHyperplane(const Hyperplane &plane);
     void setHyperplanes(const std::vector<Hyperplane> &planes);
     const Hyperplane &getHyperplane() const { return plane_; }
@@ -255,11 +278,22 @@ namespace torque_cbf
         const Eigen::VectorXd &g = Eigen::VectorXd());
 
   private:
+    /// Replace planes_; resets the latch state only if the planes differ from the current ones
+    void assignPlanes(std::vector<Hyperplane> new_planes);
+    /// Resize latch state to planes_.size() (resetting it) if needed
+    void ensureEntryStateSize();
+    /// Recompute active_v0_[i] from config_ and the latched entry velocity of plane i
+    void updateActiveV0(std::size_t i);
+
     TorqueCBFConfig config_;
     Hyperplane plane_;
     std::vector<Hyperplane> planes_;
-    std::vector<double> active_v0_;
-    std::vector<bool> was_in_zone_;
+    std::vector<double> active_v0_;          ///< Envelope entry velocity currently in use, per plane
+    std::vector<bool> was_in_zone_;          ///< Latch-zone membership at previous call (with exit hysteresis)
+    std::vector<bool> has_entry_velocity_;   ///< True while inside the latch zone after an entry was recorded
+    std::vector<double> entry_dzeta_;        ///< (Filtered) normal velocity recorded at zone entry
+    std::vector<bool> dzeta_filt_init_;      ///< Latch-velocity filter initialised
+    std::vector<double> dzeta_filt_;         ///< Latch-velocity filter state
     std::function<double(double)> custom_h_;
     std::function<double(double)> custom_H_;
   };

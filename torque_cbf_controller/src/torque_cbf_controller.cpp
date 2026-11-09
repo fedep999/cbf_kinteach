@@ -1,10 +1,14 @@
 #include "torque_cbf/torque_cbf_controller.hpp"
 
+// See torque_cbf_controller.hpp: hide Simulink's -DRT from Boost.Math while including Pinocchio
+#pragma push_macro("RT")
+#undef RT
 #include <pinocchio/algorithm/crba.hpp>
 #include <pinocchio/algorithm/frames.hpp>
 #include <pinocchio/algorithm/jacobian.hpp>
 #include <pinocchio/algorithm/kinematics.hpp>
 #include <pinocchio/algorithm/rnea.hpp>
+#pragma pop_macro("RT")
 
 #include <algorithm>
 #include <cmath>
@@ -62,29 +66,33 @@ namespace torque_cbf
     {
       throw std::invalid_argument("dt must be strictly positive.");
     }
+    if (config.zone_exit_hysteresis < 0.0)
+    {
+      throw std::invalid_argument("zone_exit_hysteresis must be non-negative.");
+    }
+    if (!(config.latch_velocity_filter_alpha > 0.0 && config.latch_velocity_filter_alpha <= 1.0))
+    {
+      throw std::invalid_argument("latch_velocity_filter_alpha must be in (0, 1].");
+    }
     config_ = config;
-    resetEntryState();
+    // Entry-latch state is intentionally preserved (see header): only the envelope
+    // velocities are refreshed, so a changed v_0 / latch flag takes effect immediately.
+    ensureEntryStateSize();
+    for (std::size_t i = 0; i < active_v0_.size(); ++i)
+    {
+      updateActiveV0(i);
+    }
   }
 
   void TorqueCBFController::setHyperplane(const Hyperplane &plane)
   {
-    const double norm = plane.normal.norm();
-    if (norm < 1e-12)
-    {
-      throw std::invalid_argument("Hyperplane normal vector must be non-zero.");
-    }
-    plane_.normal = plane.normal / norm;
-    plane_.offset = plane.offset;
-    planes_ = {plane_};
-
-    active_v0_ = {config_.v_0};
-    was_in_zone_ = {false};
+    setHyperplanes({plane});
   }
 
   void TorqueCBFController::setHyperplanes(const std::vector<Hyperplane> &planes)
   {
-    planes_.clear();
-    planes_.reserve(planes.size());
+    std::vector<Hyperplane> normalized;
+    normalized.reserve(planes.size());
     for (const auto &p : planes)
     {
       const double norm = p.normal.norm();
@@ -95,12 +103,44 @@ namespace torque_cbf
       Hyperplane normalized_p;
       normalized_p.normal = p.normal / norm;
       normalized_p.offset = p.offset;
-      planes_.push_back(normalized_p);
+      normalized.push_back(normalized_p);
     }
-    plane_ = planes_.empty() ? Hyperplane() : planes_.front();
+    assignPlanes(std::move(normalized));
+  }
 
-    active_v0_.assign(planes_.size(), config_.v_0);
-    was_in_zone_.assign(planes_.size(), false);
+  void TorqueCBFController::assignPlanes(std::vector<Hyperplane> new_planes)
+  {
+    bool same = (new_planes.size() == planes_.size());
+    for (std::size_t i = 0; same && i < new_planes.size(); ++i)
+    {
+      same = (new_planes[i].normal == planes_[i].normal) &&
+             (new_planes[i].offset == planes_[i].offset);
+    }
+    planes_ = std::move(new_planes);
+    plane_ = planes_.empty() ? Hyperplane() : planes_.front();
+    if (!same)
+    {
+      resetEntryState();
+    }
+  }
+
+  void TorqueCBFController::ensureEntryStateSize()
+  {
+    if (active_v0_.size() != planes_.size() || was_in_zone_.size() != planes_.size() ||
+        has_entry_velocity_.size() != planes_.size() || entry_dzeta_.size() != planes_.size() ||
+        dzeta_filt_init_.size() != planes_.size() || dzeta_filt_.size() != planes_.size())
+    {
+      resetEntryState();
+    }
+  }
+
+  void TorqueCBFController::updateActiveV0(std::size_t i)
+  {
+    // One-sided latch: only an entry faster (more negative) than v_0 replaces v_0.
+    // min(entry, v_0) <= v_0 < v_ths, so the envelope stays well defined.
+    active_v0_[i] = (config_.latch_entry_velocity && has_entry_velocity_[i])
+                        ? std::min(entry_dzeta_[i], config_.v_0)
+                        : config_.v_0;
   }
 
   void TorqueCBFController::setCustomProfile(
@@ -114,8 +154,13 @@ namespace torque_cbf
 
   void TorqueCBFController::resetEntryState()
   {
-    active_v0_.assign(planes_.size(), config_.v_0);
-    was_in_zone_.assign(planes_.size(), false);
+    const std::size_t m = planes_.size();
+    active_v0_.assign(m, config_.v_0);
+    was_in_zone_.assign(m, false);
+    has_entry_velocity_.assign(m, false);
+    entry_dzeta_.assign(m, 0.0);
+    dzeta_filt_init_.assign(m, false);
+    dzeta_filt_.assign(m, 0.0);
   }
 
   double TorqueCBFController::computeDistance(
@@ -206,7 +251,7 @@ namespace torque_cbf
     const Eigen::VectorXd Minv_C_dq = ldlt.solve(C_dq);
     const Eigen::Matrix<double, 6, 1> drift_cart = dJ * dq - J * Minv_C_dq;
 
-    TorqueCBFResult res = solveTorqueQP(data.M, J, drift_cart, F_ext, x_ee, dx_ee, tau_nom);
+    TorqueCBFResult res = solveTorqueQP(data.M, J, drift_cart, F_ext, x_ee, dx_ee, tau_nom, data.g);
 
     const Eigen::VectorXd tau_nom_eff =
         (tau_nom.size() == model.nv) ? tau_nom : Eigen::VectorXd::Zero(model.nv);
@@ -261,11 +306,7 @@ namespace torque_cbf
     {
       throw std::runtime_error("solveTorqueQP: No hyperplanes configured.");
     }
-    if (active_v0_.size() != static_cast<std::size_t>(m))
-    {
-      active_v0_.assign(m, config_.v_0);
-      was_in_zone_.assign(m, false);
-    }
+    ensureEntryStateSize();
 
     TorqueCBFResult res;
     res.tau_cbf = Eigen::VectorXd::Zero(n);
@@ -320,6 +361,8 @@ namespace torque_cbf
 
     int best_plane_idx = 0;
     double max_b = -std::numeric_limits<double>::infinity();
+    std::vector<Eigen::Index> zone_planes; // planes inside the CBF zone -> one QP row each
+    zone_planes.reserve(static_cast<std::size_t>(m));
 
     for (Eigen::Index i = 0; i < m; ++i)
     {
@@ -327,20 +370,40 @@ namespace torque_cbf
       const double zeta_i = computeDistance(x_ee, static_cast<std::size_t>(i));
       const double dzeta_i = computeNormalVelocity(dx_ee, static_cast<std::size_t>(i));
 
-      // Latch entry velocity if configured
+      const std::size_t si = static_cast<std::size_t>(i);
+
+      // CBF activation zone (unchanged)
       const bool in_zone = (zeta_i <= config_.p_ths && zeta_i >= -0.05);
-      if (config_.latch_entry_velocity)
+
+      // Velocity sampled by the entry latch (EMA, does not affect the QP itself)
+      if (!dzeta_filt_init_[si])
       {
-        if (in_zone && !was_in_zone_[static_cast<std::size_t>(i)])
-        {
-          active_v0_[static_cast<std::size_t>(i)] = std::min(dzeta_i, config_.v_ths - 1e-4);
-        }
+        dzeta_filt_[si] = dzeta_i;
+        dzeta_filt_init_[si] = true;
       }
-      else if (!in_zone)
+      else
       {
-        active_v0_[static_cast<std::size_t>(i)] = config_.v_0;
+        dzeta_filt_[si] += config_.latch_velocity_filter_alpha * (dzeta_i - dzeta_filt_[si]);
       }
-      was_in_zone_[static_cast<std::size_t>(i)] = in_zone;
+
+      // Latch-zone membership with exit hysteresis: enter at zeta <= p_ths,
+      // leave only at zeta > p_ths + zone_exit_hysteresis
+      const bool in_latch_zone = was_in_zone_[si]
+                                     ? (zeta_i <= config_.p_ths + config_.zone_exit_hysteresis)
+                                     : (zeta_i <= config_.p_ths);
+      if (in_latch_zone && !was_in_zone_[si])
+      {
+        entry_dzeta_[si] = dzeta_filt_[si];
+        has_entry_velocity_[si] = true;
+      }
+      else if (!in_latch_zone)
+      {
+        has_entry_velocity_[si] = false;
+      }
+      was_in_zone_[si] = in_latch_zone;
+
+      // One-sided latch (if enabled): v_0 <- min(entry velocity, v_0)
+      updateActiveV0(si);
 
       const double v_min_i = computeVelocityEnvelope(zeta_i, static_cast<std::size_t>(i));
       const double dv_min_i = computeVelocityEnvelopeDerivative(zeta_i, static_cast<std::size_t>(i));
@@ -353,9 +416,11 @@ namespace torque_cbf
       {
         b_i = dv_min_i * dzeta_i - a_drift_i - config_.gamma * B_i;
         res.active_planes[static_cast<std::size_t>(i)] = (b_i > 0.0);
+        zone_planes.push_back(i);
       }
       else
       {
+        // Out of zone: no CBF row is added to the QP; finite sentinel kept for telemetry only
         b_i = -1e3;
         res.active_planes[static_cast<std::size_t>(i)] = false;
       }
@@ -363,12 +428,20 @@ namespace torque_cbf
       // One-way velocity braking cap (Passivity / Kinesthetic Teaching)
       // When moving away (dzeta >= 0), cap is 0 -> f_n == 0 identically.
       // When approaching (dzeta < 0), cap is (rho_i / dt) * |dzeta_i|.
+      // One-cycle model: dzeta_next = dzeta + (a_drift + f / rho) * dt.
+      //   - |dzeta| * rho / dt      : force that stops the current approach velocity in one cycle
+      //   - max(0, -a_drift) * rho  : (optional) force that cancels the approaching drift
+      //                               acceleration (human push, gravity residual, ...) in the same cycle
+      // With both terms dzeta_next <= 0: the CBF can stop the robot but never reverse it.
+      // The cap is zero while separating (dzeta > 0), so the CBF power f * dzeta is never positive.
       double f_brake_i = std::numeric_limits<double>::infinity();
       if (config_.enforce_passivity)
       {
-        if (dzeta_i < 0.0)
+        if (dzeta_i <= 0.0)
         {
-          f_brake_i = (res.rho(i) / config_.dt) * std::abs(dzeta_i);
+          const double a_cancel =
+              config_.brake_cap_include_drift ? std::max(0.0, -a_drift_i) : 0.0;
+          f_brake_i = res.rho(i) * (std::abs(dzeta_i) / config_.dt + a_cancel);
         }
         else
         {
@@ -405,42 +478,28 @@ namespace torque_cbf
     const Eigen::MatrixXd K = J.transpose() * N6;
 
     // Joint torque limits on tau_cbf = K * f_n
-    Eigen::VectorXd tau_min_eff(n);
-    Eigen::VectorXd tau_max_eff(n);
-    const Eigen::VectorXd tau_nom_eff =
-        (tau_nom.size() == n) ? tau_nom : Eigen::VectorXd::Zero(n);
-    const Eigen::VectorXd g_eff =
-        (g.size() == n) ? g : Eigen::VectorXd::Zero(n);
-    const Eigen::VectorXd total_base_torque = tau_nom_eff + g_eff;
-
-    if (config_.tau_min.size() == n)
+    //   enforce_total_torque_limits == false:  tau_min <= tau_cbf <= tau_max
+    //   enforce_total_torque_limits == true:   tau_min <= g + tau_nom + tau_cbf <= tau_max
+    // In the total case the bounds on tau_cbf are relaxed to always contain 0: if g + tau_nom
+    // alone already violates a limit, the CBF is only prevented from making it worse
+    // (it cannot repair torques it does not own), and the QP stays feasible.
+    const Eigen::VectorXd tau_min_abs = (config_.tau_min.size() == n)
+                                            ? config_.tau_min
+                                            : Eigen::VectorXd::Constant(n, -config_.default_tau_limit);
+    const Eigen::VectorXd tau_max_abs = (config_.tau_max.size() == n)
+                                            ? config_.tau_max
+                                            : Eigen::VectorXd::Constant(n, config_.default_tau_limit);
+    Eigen::VectorXd tau_min_eff = tau_min_abs;
+    Eigen::VectorXd tau_max_eff = tau_max_abs;
+    if (config_.enforce_total_torque_limits)
     {
-      tau_min_eff = config_.enforce_total_torque_limits
-                        ? (config_.tau_min - total_base_torque)
-                        : config_.tau_min;
-    }
-    else
-    {
-      tau_min_eff.setConstant(-config_.default_tau_limit);
-      if (config_.enforce_total_torque_limits)
-      {
-        tau_min_eff -= total_base_torque;
-      }
-    }
-
-    if (config_.tau_max.size() == n)
-    {
-      tau_max_eff = config_.enforce_total_torque_limits
-                        ? (config_.tau_max - total_base_torque)
-                        : config_.tau_max;
-    }
-    else
-    {
-      tau_max_eff.setConstant(config_.default_tau_limit);
-      if (config_.enforce_total_torque_limits)
-      {
-        tau_max_eff -= total_base_torque;
-      }
+      const Eigen::VectorXd tau_nom_eff =
+          (tau_nom.size() == n) ? tau_nom : Eigen::VectorXd::Zero(n);
+      const Eigen::VectorXd g_eff =
+          (g.size() == n) ? g : Eigen::VectorXd::Zero(n);
+      const Eigen::VectorXd total_base_torque = tau_nom_eff + g_eff;
+      tau_min_eff = (tau_min_abs - total_base_torque).cwiseMin(0.0);
+      tau_max_eff = (tau_max_abs - total_base_torque).cwiseMax(0.0);
     }
 
     // Fast path: if not active and zero force is strictly feasible, return zero torque
@@ -477,24 +536,29 @@ namespace torque_cbf
     ub(m) = std::numeric_limits<double>::infinity();
 
     // Linear inequalities A_ineq * z >= b_ineq
-    // 1) CBF constraints (m rows): A_cbf * f_n + 1_m * delta >= b_cbf
+    // 1) CBF constraints (m_z rows, only planes inside the zone): A_cbf(i,:) * f_n + delta >= b_cbf,i
     // 2) Lower torque limits (n rows): K * f_n >= tau_min_eff
     // 3) Upper torque limits (n rows): -K * f_n >= -tau_max_eff
-    const Eigen::Index m_ineq = m + 2 * n;
+    const Eigen::Index m_z = static_cast<Eigen::Index>(zone_planes.size());
+    const Eigen::Index m_ineq = m_z + 2 * n;
     Eigen::MatrixXd A_ineq = Eigen::MatrixXd::Zero(m_ineq, m + 1);
     Eigen::VectorXd b_ineq = Eigen::VectorXd::Zero(m_ineq);
 
     // CBF block
-    A_ineq.block(0, 0, m, m) = A_cbf;
-    A_ineq.block(0, m, m, 1).setOnes();
-    b_ineq.head(m) = res.b_cbf;
+    for (Eigen::Index r = 0; r < m_z; ++r)
+    {
+      const Eigen::Index i = zone_planes[static_cast<std::size_t>(r)];
+      A_ineq.block(r, 0, 1, m) = A_cbf.row(i);
+      A_ineq(r, m) = 1.0;
+      b_ineq(r) = res.b_cbf(i);
+    }
 
     // Torque limits block
-    A_ineq.block(m, 0, n, m) = K;
-    b_ineq.segment(m, n) = tau_min_eff;
+    A_ineq.block(m_z, 0, n, m) = K;
+    b_ineq.segment(m_z, n) = tau_min_eff;
 
-    A_ineq.block(m + n, 0, n, m) = -K;
-    b_ineq.segment(m + n, n) = -tau_max_eff;
+    A_ineq.block(m_z + n, 0, n, m) = -K;
+    b_ineq.segment(m_z + n, n) = -tau_max_eff;
 
     // Solve strictly convex QP
     Eigen::VectorXd z_opt(m + 1);
