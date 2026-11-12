@@ -239,6 +239,8 @@ int main(int argc, char **argv)
           cfg.gamma = yaml["cbf"]["gamma"].as<double>();
         if (yaml["cbf"]["d_max"])
           cfg.d_max = yaml["cbf"]["d_max"].as<double>();
+        if (yaml["cbf"]["d_max_inertia_gain"])
+          cfg.d_max_inertia_gain = yaml["cbf"]["d_max_inertia_gain"].as<double>();
         if (yaml["cbf"]["compensate_external_force"])
           cfg.compensate_external_force = yaml["cbf"]["compensate_external_force"].as<bool>();
         if (yaml["cbf"]["profile"])
@@ -494,6 +496,14 @@ int main(int argc, char **argv)
 
     const Eigen::Matrix<double, 6, 1> dx6 = J6 * dq;
     const Eigen::Vector3d dx = dx6.head<3>();
+
+    // Pinocchio's LOCAL_WORLD_ALIGNED dJ gives the SPATIAL acceleration; make it the true time derivative
+    // of J (classical acceleration, as Body2Hybrid in the Simulink model): dJ_lin += -[v]x * J_ang
+    {
+      Eigen::Matrix3d v_skew;
+      v_skew << 0.0, -dx.z(), dx.y(), dx.z(), 0.0, -dx.x(), -dx.y(), dx.x(), 0.0;
+      dJ6.topRows<3>() -= v_skew * J6.bottomRows<3>();
+    }
 
     // Pinocchio Full Non-Linear Dynamics
     pinocchio::crba(model, data, q);

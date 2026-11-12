@@ -240,3 +240,8 @@ yaml_cpp_install/
 local_install/
 *.mat
 *_rtw/
+*22Franka.*
+# Compiled Franka model executables: committed compressed as <name>.xz (decompress: xz -dk <name>.xz)
+torque_cbf_simulink/Controller_trorque_cbf_22Franka
+joint_torque_cbf_simulink/Controller_jtorque_cbf_22Franka
+!*22Franka.xz

@@ -1,0 +1,20 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>jtorque_cbf</name>
+  <version>1.0.0</version>
+  <description>Joint-space torque Control Barrier Function controller (CBF joint torque as QP decision variable, rate-limit aware)</description>
+  <maintainer email="federico.parma@unibs.it">fedep999</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>cbf_common</depend>
+  <depend>eigen</depend>
+  <depend>pinocchio</depend>
+  <test_depend>torque_cbf</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

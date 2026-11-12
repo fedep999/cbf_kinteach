@@ -63,13 +63,13 @@ cbf_dt        = 0.001;   % Sampling time [s] for passivity / one-way braking cap
 % Lateral spring-damper (add_lateral_stiffness.m): Cartesian spring towards H_home plus
 % damping with constant damping ratio, tau_stiff = -Jg'*(Fk + Fd),
 % D_i = 2*zeta_i*sqrt(K_i*Lambda_ii). Keep the z entries 0 (free along the plane normal).
-cbf_Kd_trans   = [2000; 2000; 0];  % Translational stiffness x, y, z [N/m]
-cbf_Kd_rot     = [120; 120; 120];  % Rotational stiffness [Nm/rad] (holds orientation)
-cbf_zeta_trans = [0.7; 0.7; 0];    % Translational damping ratio x, y, z [-] (1 = critical)
-cbf_zeta_rot   = [0.7; 0.7; 0.7];  % Rotational damping ratio [-] (0 = undamped orientation spring)
+cbf_Kd_trans   = [2000; 2000; 0]*0;  % Translational stiffness x, y, z [N/m]
+cbf_Kd_rot     = [120; 120; 120]*0;  % Rotational stiffness [Nm/rad] (holds orientation)
+cbf_zeta_trans = [0.7; 0.7; 0]*0;    % Translational damping ratio x, y, z [-] (1 = critical)
+cbf_zeta_rot   = [0.7; 0.7; 0.7]*0;  % Rotational damping ratio [-] (0 = undamped orientation spring)
 % 1 = spring-damper dynamically decoupled from the plane normal: it produces zero
 % acceleration along n (only the CBF acts along the normal). 0 = plain spring-damper.
-cbf_stiff_decouple = 1;
+cbf_stiff_decouple = 0;   % 1 made the robot drift/oscillate along z when untouched (9 Nov 2026), keep 0
 
 % CBF_Logger (add_cbf_logger.m / load_cbf_log.m): 49 columns per logged sample
 % (~0.4 MB/s at 1 kHz). Increase to log every n-th sample only.
@@ -78,18 +78,20 @@ cbf_log_decimation = 1;
 % Entry-velocity latch (one-sided): entering the zone FASTER than v_0 restarts the
 % envelope from the entry speed (smooth onset, B = 0 at entry); slower entries keep v_0
 % (no CBF action at entry).
-cbf_latch_entry  = 0;      % 1 = enabled, 0 = disabled
+cbf_latch_entry  = 1;      % 1 = enabled, 0 = disabled
 cbf_zone_hyst    = 0.005;  % Zone exit hysteresis [m]: no re-latch when hovering around p_ths
 cbf_latch_alpha  = 0.2;    % EMA coefficient (0,1] of the latched velocity (0.2 @ 1 kHz ~ 5 ms)
 
-% Packed parameters for sfun_torque_cbf (24x1):
+cbf_tau_rate = 999;   % [Nm/s] CBF torque-rate budget (0 = off, recommended)
+
+% Packed parameters for sfun_torque_cbf (25x1):
 % [p_ths, v_ths, v_0, gamma, w_lin, w_slack, tau_limit, dt, nx, ny, nz, ox, oy, oz,
 %  latch_entry_velocity, zone_exit_hysteresis, latch_velocity_filter_alpha,
-%  tau_max_1 ... tau_max_7]
+%  tau_max_1 ... tau_max_7, tau_rate_limit]
 cbf_torque_params = [cbf_p_ths; cbf_v_ths; cbf_v_0; cbf_gamma; cbf_w_lin; cbf_w_slack; ...
                      cbf_tau_limit; cbf_dt; plane_normal; plane_offset; ...
-                     cbf_latch_entry; cbf_zone_hyst; cbf_latch_alpha; cbf_tau_max];
-assert(numel(cbf_torque_params) == 24, 'cbf_torque_params must be 24x1 (see sfun_torque_cbf.cpp)');
+                     cbf_latch_entry; cbf_zone_hyst; cbf_latch_alpha; cbf_tau_max; cbf_tau_rate];
+assert(numel(cbf_torque_params) == 25, 'cbf_torque_params must be 25x1 (see sfun_torque_cbf.cpp)');
 % Savitzky-Golay force filter (aggressive)
 sg_p    = 2;        % polynomial order: 1 = strongest smoothing, 2 = keeps peaks better
 sg_N    = 21;      % window length (odd): 101 samples = 100 ms span at 1 kHz

@@ -44,6 +44,18 @@ namespace damping_cbf
     {
       throw std::invalid_argument("d_max must be non-negative.");
     }
+    if (!(config.d_max_inertia_gain >= 0.0))
+    {
+      throw std::invalid_argument("d_max_inertia_gain must be non-negative (0 = disabled).");
+    }
+    if (!(config.tau_rate_limit >= 0.0))
+    {
+      throw std::invalid_argument("tau_rate_limit must be non-negative (0 = disabled).");
+    }
+    if (!(config.dt > 0.0))
+    {
+      throw std::invalid_argument("dt must be strictly positive.");
+    }
     if (config.slack_quadratic_penalty <= 0.0)
     {
       throw std::invalid_argument("slack_quadratic_penalty must be strictly positive.");
@@ -121,6 +133,24 @@ namespace damping_cbf
     updateActiveV0();
   }
 
+  void DampingCBFController::resetRateState()
+  {
+    f_prev_ = 0.0;
+  }
+
+  double DampingCBFController::computeNormalForceRate(const Eigen::MatrixXd &J,
+                                                      const Eigen::Vector3d &normal,
+                                                      double tau_rate)
+  {
+    if (!(tau_rate > 0.0) || J.rows() < 3)
+    {
+      return std::numeric_limits<double>::infinity();
+    }
+    // Joint torque per newton of force along n: J_lin^T n
+    const Eigen::VectorXd k = J.topRows<3>().transpose() * normal.normalized();
+    return tau_rate / std::max(1e-9, k.cwiseAbs().maxCoeff());
+  }
+
   double DampingCBFController::evaluateProfileH(double u) const
   {
     return cbf::evaluateProfileH(config_.profile, u, custom_h_);
@@ -190,6 +220,15 @@ namespace damping_cbf
     return cbf::computeBarrierValue(zeta, dzeta, config_.p_ths, active_v0_, config_.v_ths, config_.profile, custom_H_);
   }
 
+  double DampingCBFController::computeEffectiveDMax(double rho) const
+  {
+    if (config_.d_max_inertia_gain <= 0.0)
+    {
+      return config_.d_max;
+    }
+    return std::max(0.0, std::min(config_.d_max, config_.d_max_inertia_gain * rho));
+  }
+
   Eigen::VectorXd DampingCBFController::solveGeneralCBFQP(
       const Eigen::MatrixXd &G,
       const Eigen::VectorXd &g0,
@@ -210,6 +249,7 @@ namespace damping_cbf
 
   CBFStepResult DampingCBFController::solveDampingQP(
       double zeta, double dzeta, double rho, double a_drift,
+      double normal_force_rate,
       const Eigen::MatrixXd &A_extra,
       const Eigen::VectorXd &b_extra)
   {
@@ -217,6 +257,27 @@ namespace damping_cbf
     res.zeta = zeta;
     res.dzeta = dzeta;
     res.rho = rho;
+    res.d_max_eff = computeEffectiveDMax(rho);
+
+    // Ramp-up bound on the normal damping force f = d*|dzeta|: f <= f_app + r*dt, where f_app is the force the
+    // rate-limited robot still applies (it decays by at most r*dt per call). Mapped to an upper bound on d.
+    // At (near) zero velocity the damping force is ~0 whatever d is, so d is not constrained there.
+    const bool rate_on = config_.tau_rate_limit > 0.0 && std::isfinite(normal_force_rate) && normal_force_rate > 0.0;
+    const double vel = std::abs(dzeta);
+    res.f_rate = rate_on ? normal_force_rate : std::numeric_limits<double>::infinity();
+    res.f_applied_est = 0.0;
+    res.d_rate_max = res.d_max_eff;
+    if (rate_on)
+    {
+      const double df = normal_force_rate * config_.dt;
+      res.f_applied_est = std::max(0.0, f_prev_ - df);
+      if (vel > 1e-6)
+      {
+        res.d_rate_max = (f_prev_ + df) / vel;
+      }
+    }
+    const double d_hi = std::min(res.d_rate_max, res.d_max_eff);
+    const double d_lo = 0.0;
 
     // Velocity sampled by the entry latch (EMA, does not affect the QP itself)
     if (!dzeta_filt_init_)
@@ -268,7 +329,7 @@ namespace damping_cbf
       //   min_{z in R^2}  0.5 * z^T * G * z + g0^T * z
       //   subject to      [L_g B,  1.0] * z >= -(L_f B + gamma * B)
       //                   A_extra       * z >= b_extra   (optional extra 2D CBF / backup CBF rows)
-      //                   [0, 0]^T <= z <= [d_max, +inf]^T
+      //                   [0, 0]^T <= z <= [d_max_eff, +inf]^T,  d_max_eff = min(d_max, kappa*rho)
       Eigen::MatrixXd G = Eigen::MatrixXd::Zero(2, 2);
       G(0, 0) = 1.0;
       G(1, 1) = config_.slack_quadratic_penalty;
@@ -300,9 +361,9 @@ namespace damping_cbf
       }
 
       Eigen::VectorXd lb(2);
-      lb << 0.0, 0.0;
+      lb << d_lo, 0.0;
       Eigen::VectorXd ub(2);
-      ub << config_.d_max, std::numeric_limits<double>::infinity();
+      ub << d_hi, std::numeric_limits<double>::infinity();
 
       // Solve 2D QP numerically via Goldfarb-Idnani dual active-set algorithm (quadprog)
       Eigen::VectorXd z_sol = solveGeneralCBFQP(
@@ -315,11 +376,19 @@ namespace damping_cbf
     else
     {
       res.is_active = false;
-      res.z_opt.setZero();
       res.d_cbf = 0.0;
+      res.z_opt.setZero();
       res.slack_eps = 0.0;
       res.qp_cost = 0.0;
     }
+
+    if (rate_on)
+    {
+      const double tol = 1e-9 * std::max(1.0, d_hi);
+      res.rate_limited = (res.d_rate_max < res.d_max_eff && res.d_cbf >= d_hi - tol);
+    }
+    // Applied force after this call: the new command, or the previous force still ramping down
+    f_prev_ = rate_on ? std::max(res.d_cbf * vel, res.f_applied_est) : res.d_cbf * vel;
 
     res.dB_dt = res.Lf_B + res.Lg_B * res.d_cbf;
     res.f_imp_scalar = res.d_cbf * std::abs(dzeta);
@@ -467,7 +536,12 @@ namespace damping_cbf
 
       Eigen::VectorXd lb = Eigen::VectorXd::Zero(n_vars);
       Eigen::VectorXd ub(n_vars);
-      ub.head(m).setConstant(config_.d_max);
+      // Per-plane inertia-dependent limit: rho_i = 1 / (n_i^T Lambda^-1 n_i)
+      for (int i = 0; i < m; ++i)
+      {
+        const double inv_rho_i = static_cast<double>(n6_vec[i].transpose() * Lambda_inv * n6_vec[i]);
+        ub(i) = computeEffectiveDMax(inv_rho_i > 1e-12 ? 1.0 / inv_rho_i : 0.0);
+      }
       ub.tail(m_act).setConstant(std::numeric_limits<double>::infinity());
 
       const Eigen::VectorXd z_sol = solveGeneralCBFQP(
@@ -502,6 +576,7 @@ namespace damping_cbf
     res.barrier_B = res.barriers(rep_idx);
     res.d_cbf = res.d_opt(rep_idx);
     res.rho = computeEffectiveInertia(Lambda, planes_[rep_idx].normal);
+    res.d_max_eff = computeEffectiveDMax(res.rho);
     res.z_opt << res.d_cbf, res.slack_eps;
     res.Lg_B = -res.dzeta / res.rho;
     const double a_drift_rep =
@@ -583,7 +658,8 @@ namespace damping_cbf
         config_.compensate_external_force ? (F_nominal + state.F_ext) : F_nominal;
     const double a_drift = n6.transpose() * Lambda.ldlt().solve(F_drift);
 
-    CBFStepResult cbf_res = solveDampingQP(zeta, dzeta, rho, a_drift);
+    const double f_rate = computeNormalForceRate(state.J, plane_.normal, config_.tau_rate_limit);
+    CBFStepResult cbf_res = solveDampingQP(zeta, dzeta, rho, a_drift, f_rate);
     cbf_res.d_opt = Eigen::VectorXd::Constant(1, cbf_res.d_cbf);
     cbf_res.zetas = Eigen::VectorXd::Constant(1, cbf_res.zeta);
     cbf_res.dzetas = Eigen::VectorXd::Constant(1, cbf_res.dzeta);

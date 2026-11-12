@@ -66,6 +66,21 @@ namespace torque_cbf
     bool enforce_total_torque_limits = false; ///< If true, bounds g + tau_nom + tau_cbf in [tau_min, tau_max]
                                               ///< (bounds on tau_cbf relaxed to always contain 0, so the QP stays
                                               ///< feasible when g + tau_nom alone is already out of limits)
+
+    /// Actuator torque-rate limit (e.g. Franka: 1000 Nm/s per joint, enforced by libfranka / a rate limiter).
+    /// tau_rate_limit is the budget given to tau_cbf [Nm/s]; keep it below the robot limit to leave headroom
+    /// for the other torque terms (tau_null, ...). 0 = disabled (legacy behaviour).
+    /// When enabled, per plane i with r_i = tau_rate_limit / (m * max_j |(J^T n_i)_j|)  [N/s]:
+    ///   - ramp-up bound:   f_n,i <= f_app,i + r_i * dt, f_app,i = estimate of the force the rate-limited robot
+    ///                      still applies (it decays by at most r_i*dt per call). The QP never plans a force
+    ///                      increase the robot cannot follow. Decreases are NOT constrained: the robot ramps
+    ///                      down as fast as it physically can (a lingering force only brakes more while
+    ///                      approaching, and a faster ramp-down minimises pushback when the operator lets go)
+    ///   - pushback-aware cap (if enforce_passivity):
+    ///                      f_n,i <= rho_i * max(0, -a_drift_i) + sqrt(2 * r_i * rho_i * |dzeta_i|)
+    ///                      the force exceeding the holding force can be ramped to zero before dzeta reaches 0,
+    ///                      so the rate-limited force never pushes the end-effector away from the plane.
+    double tau_rate_limit = 0.0;
   };
 
   /**
@@ -87,6 +102,10 @@ namespace torque_cbf
     Eigen::Vector3d F_cart_lat = Eigen::Vector3d::Zero(); ///< Lateral Cartesian force component (strictly zero) [N]
     Eigen::VectorXd rho;                                  ///< Operational space effective inertia along normals rho_i in R^m [kg]
     Eigen::VectorXd f_brake_max;                          ///< One-way velocity braking cap values in R^m [N]
+    Eigen::VectorXd f_applied_est;                        ///< Estimated force still applied by the rate-limited robot in R^m [N]
+    Eigen::VectorXd f_rate_max;                           ///< Ramp-up upper bound on f_n in R^m [N]
+    Eigen::VectorXd f_rate;                               ///< Normal-force rate limit r_i in R^m [N/s] (inf if disabled)
+    bool rate_limited = false;                            ///< True if the ramp-up bound is active at the solution
 
     // Multi-surface per-plane telemetry (size m)
     Eigen::VectorXd zetas;           ///< Orthogonal distances to each hyperplane [m]
@@ -175,6 +194,9 @@ namespace torque_cbf
 
     /// Reset latched entry velocities
     void resetEntryState();
+
+    /// Forget the estimated applied normal forces (rate limit then starts from zero force)
+    void resetRateState();
 
     /// Velocity envelope helpers
     double computeDistance(const Eigen::Vector3d &x, std::size_t plane_idx = 0) const;
@@ -294,6 +316,8 @@ namespace torque_cbf
     std::vector<double> entry_dzeta_;        ///< (Filtered) normal velocity recorded at zone entry
     std::vector<bool> dzeta_filt_init_;      ///< Latch-velocity filter initialised
     std::vector<double> dzeta_filt_;         ///< Latch-velocity filter state
+    Eigen::VectorXd f_prev_;                 ///< Estimated normal forces applied by the robot after the previous call
+    bool has_f_prev_ = false;                ///< f_prev_ is valid
     std::function<double(double)> custom_h_;
     std::function<double(double)> custom_H_;
   };
