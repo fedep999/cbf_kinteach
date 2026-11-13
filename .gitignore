@@ -240,3 +240,4 @@ yaml_cpp_install/
 local_install/
 *.mat
 *_rtw/
+papers/
