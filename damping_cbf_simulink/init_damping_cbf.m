@@ -48,7 +48,7 @@ xTableHeight = 0.106 - 0.004; % Table/barrier surface height [m] (0.102 m)
 plane_normal = [0.0; 0.0; 1.0];                   % Hyperplane normal n_hp
 plane_offset = [0.48; 0.16; xTableHeight];        % Hyperplane offset
 
-cbf_p_ths    = 0.250;    % Distance activation threshold [m] (p_ths > 0)
+cbf_p_ths    = 0.30;    % Distance activation threshold [m] (p_ths > 0)
 cbf_v_ths    = -0.02;  % Terminal contact velocity threshold [m/s] (v_ths < 0)
 cbf_v_0      = -0.5;   % Nominal entry velocity [m/s] (v_0 < v_ths < 0)
 cbf_gamma    = 12.0;    % Class-K decay gain [1/s]
@@ -61,7 +61,7 @@ cbf_kappa = 0.85 * cbf_d_max / cbf_rho_eff;   % ≈ 58 1/s  (safe damping bandwi
 % Entry-velocity latch (one-sided): entering the zone FASTER than v_0 restarts the
 % envelope from the entry speed (smooth onset, B = 0 at entry); slower entries keep v_0
 % (no CBF damping at entry).
-cbf_latch_entry  = 0;      % 1 = enabled, 0 = disabled
+cbf_latch_entry  = 1;      % 1 = enabled, 0 = disabled
 cbf_zone_hyst    = 0.005;  % Zone exit hysteresis [m]: no re-latch when hovering around p_ths
 cbf_latch_alpha  = 0.2;    % EMA coefficient (0,1] of the latched velocity (0.2 @ 1 kHz ~ 5 ms)
 
@@ -69,18 +69,19 @@ cbf_latch_alpha  = 0.2;    % EMA coefficient (0,1] of the latched velocity (0.2 
 % 1 = the Cartesian spring + lateral damping produce zero acceleration along the plane
 %     normal (only the CBF damping acts along n; the CBF sees no nominal normal force).
 % 0 = original impedance controller.
-cbf_stiff_decouple = 1;
+cbf_stiff_decouple = 0;   % 1 made the robot drift/oscillate along z when untouched (9 Nov 2026), keep 0
 
 % Packed parameters for sfun_damping_cbf (16x1):
 % [p_ths, v_ths, v_0, gamma, d_max, w_lin, w_quad, nx, ny, nz, ox, oy, oz,
 %  latch_entry_velocity, zone_exit_hysteresis, latch_velocity_filter_alpha]
+cbf_clip_drift = 1;   % 1 = ignore net drift away from the plane (conservative), 0 = two-sided
+
 cbf_damping_params = [cbf_p_ths; cbf_v_ths; cbf_v_0; cbf_gamma; cbf_d_max; ...
                       cbf_w_lin; cbf_w_quad; plane_normal; plane_offset; ...
-                      cbf_latch_entry; cbf_zone_hyst; cbf_latch_alpha];
-% Savitzky-Golay force filter (aggressive)
+                      cbf_latch_entry; cbf_zone_hyst; cbf_latch_alpha; cbf_clip_drift];% Savitzky-Golay force filter (aggressive)
 sg_p    = 2;        % polynomial order: 1 = strongest smoothing, 2 = keeps peaks better
-sg_N    = 51;      % window length (odd): 101 samples = 100 ms span at 1 kHz
-sg_mode = 'centered';   % 'centered' or 'causal'
+sg_N    = 21;      % window length (odd): 101 samples = 100 ms span at 1 kHz
+sg_mode = 'causal';   % 'centered' or 'causal'
 
 B = sgolay(sg_p, sg_N);                 % N x N; row i estimates sample i of the window
 switch sg_mode

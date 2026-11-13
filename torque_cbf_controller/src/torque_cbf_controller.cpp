@@ -74,6 +74,10 @@ namespace torque_cbf
     {
       throw std::invalid_argument("latch_velocity_filter_alpha must be in (0, 1].");
     }
+    if (!(config.tau_rate_limit >= 0.0))
+    {
+      throw std::invalid_argument("tau_rate_limit must be non-negative (0 = disabled).");
+    }
     config_ = config;
     // Entry-latch state is intentionally preserved (see header): only the envelope
     // velocities are refreshed, so a changed v_0 / latch flag takes effect immediately.
@@ -121,7 +125,14 @@ namespace torque_cbf
     if (!same)
     {
       resetEntryState();
+      resetRateState();
     }
+  }
+
+  void TorqueCBFController::resetRateState()
+  {
+    has_f_prev_ = false;
+    f_prev_.resize(0);
   }
 
   void TorqueCBFController::ensureEntryStateSize()
@@ -238,6 +249,16 @@ namespace torque_cbf
     const Eigen::Matrix<double, 6, 1> dx6 = J * dq;
     const Eigen::Vector3d dx_ee = dx6.head<3>();
 
+    // Pinocchio's LOCAL_WORLD_ALIGNED dJ gives J*ddq + dJ*dq = SPATIAL acceleration; the classical linear
+    // acceleration of the frame origin (= d/dt of dx_ee, what the CBF needs) is that plus omega x v.
+    // Make dJ the true time derivative of J: dJ_lin += -[v]x * J_ang  (so dJ*dq gains omega x v).
+    {
+      const Eigen::Vector3d v = dx6.head<3>();
+      Eigen::Matrix3d v_skew;
+      v_skew << 0.0, -v.z(), v.y(), v.z(), 0.0, -v.x(), -v.y(), v.x(), 0.0;
+      dJ.topRows<3>() -= v_skew * J.bottomRows<3>();
+    }
+
     // Dynamics computations: M(q), C(q, dq)*dq, g(q)
     pinocchio::crba(model, data, q);
     data.M.triangularView<Eigen::StrictlyLower>() =
@@ -314,6 +335,9 @@ namespace torque_cbf
     res.f_n = Eigen::VectorXd::Zero(m);
     res.rho = Eigen::VectorXd::Zero(m);
     res.f_brake_max = Eigen::VectorXd::Zero(m);
+    res.f_applied_est = Eigen::VectorXd::Zero(m);
+    res.f_rate_max = Eigen::VectorXd::Constant(m, std::numeric_limits<double>::infinity());
+    res.f_rate = Eigen::VectorXd::Constant(m, std::numeric_limits<double>::infinity());
     res.zetas.resize(m);
     res.dzetas.resize(m);
     res.v_mins.resize(m);
@@ -358,6 +382,24 @@ namespace torque_cbf
     {
       res.rho(i) = 1.0 / std::max(1e-9, A_cbf(i, i));
     }
+
+    // Control mapping matrix K = J^T * N_6 in R^{n x m}
+    const Eigen::MatrixXd K = J.transpose() * N6;
+
+    // Torque-rate limit -> normal-force rate r_i [N/s]: a change df of f_n,i changes joint j by K(j,i)*df.
+    // With m planes changing together the per-plane budget is split (conservative).
+    const bool rate_on = config_.tau_rate_limit > 0.0;
+    if (rate_on)
+    {
+      for (Eigen::Index i = 0; i < m; ++i)
+      {
+        const double k_max = std::max(1e-9, K.col(i).cwiseAbs().maxCoeff());
+        res.f_rate(i) = config_.tau_rate_limit / (k_max * static_cast<double>(m));
+      }
+    }
+    // Force the robot applied after the previous call (zero if none: the robot starts without CBF force)
+    const Eigen::VectorXd f_prev =
+        (rate_on && has_f_prev_ && f_prev_.size() == m) ? f_prev_ : Eigen::VectorXd::Zero(m);
 
     int best_plane_idx = 0;
     double max_b = -std::numeric_limits<double>::infinity();
@@ -442,6 +484,17 @@ namespace torque_cbf
           const double a_cancel =
               config_.brake_cap_include_drift ? std::max(0.0, -a_drift_i) : 0.0;
           f_brake_i = res.rho(i) * (std::abs(dzeta_i) / config_.dt + a_cancel);
+
+          // Pushback-aware cap (rate-limited actuator): the force above the holding force
+          // f_hold = rho*max(0,-a_drift) decelerates the end-effector. Ramping an excess e down at
+          // r [N/s] removes e^2/(2r) of impulse, i.e. e^2/(2 r rho) of velocity; requiring this to be
+          // <= |dzeta| gives e <= sqrt(2 r rho |dzeta|): the excess is gone when dzeta reaches 0.
+          if (rate_on)
+          {
+            const double f_hold = res.rho(i) * std::max(0.0, -a_drift_i);
+            const double f_unwind = f_hold + std::sqrt(2.0 * res.f_rate(i) * res.rho(i) * std::abs(dzeta_i));
+            f_brake_i = std::min(f_brake_i, f_unwind);
+          }
         }
         else
         {
@@ -449,6 +502,14 @@ namespace torque_cbf
         }
       }
       res.f_brake_max(i) = f_brake_i;
+
+      // Ramp-up bound f <= f_app + r*dt; f_app = what the robot still applies (decays by <= r*dt)
+      if (rate_on)
+      {
+        const double df = res.f_rate(i) * config_.dt;
+        res.f_applied_est(i) = std::max(0.0, f_prev(i) - df);
+        res.f_rate_max(i) = f_prev(i) + df;
+      }
 
       res.zetas(i) = zeta_i;
       res.dzetas(i) = dzeta_i;
@@ -474,8 +535,9 @@ namespace torque_cbf
     res.a_drift_scalar = res.a_drift(best_plane_idx);
     res.is_active = (max_b > 0.0);
 
-    // Control mapping matrix K = J^T * N_6 in R^{n x m}
-    const Eigen::MatrixXd K = J.transpose() * N6;
+    // Box bounds on f_n: [0, min(f_brake_max, f_rate_max)] (passivity / pushback cap and ramp-up bound)
+    const Eigen::VectorXd f_lb = Eigen::VectorXd::Zero(m);
+    const Eigen::VectorXd f_ub = res.f_brake_max.cwiseMin(res.f_rate_max);
 
     // Joint torque limits on tau_cbf = K * f_n
     //   enforce_total_torque_limits == false:  tau_min <= tau_cbf <= tau_max
@@ -507,6 +569,8 @@ namespace torque_cbf
         (tau_min_eff.array() <= 0.0).all() && (tau_max_eff.array() >= 0.0).all();
     if (!res.is_active && zero_torque_feasible)
     {
+      f_prev_ = res.f_applied_est;   // the robot is still ramping down whatever it applied before
+      has_f_prev_ = true;
       res.tau_cbf.setZero();
       res.f_n.setZero();
       res.f_n_scalar = 0.0;
@@ -528,11 +592,12 @@ namespace torque_cbf
     g0(m) = config_.w_lin;
 
     // Box bounds on z:
-    // 0 <= f_n,i <= f_brake_max,i
+    // 0 <= f_n,i <= f_ub,i   (passivity / pushback cap and ramp-up bound, see above)
     // 0 <= delta < inf
     Eigen::VectorXd lb = Eigen::VectorXd::Zero(m + 1);
     Eigen::VectorXd ub(m + 1);
-    ub.head(m) = res.f_brake_max;
+    lb.head(m) = f_lb;
+    ub.head(m) = f_ub;
     ub(m) = std::numeric_limits<double>::infinity();
 
     // Linear inequalities A_ineq * z >= b_ineq
@@ -580,7 +645,7 @@ namespace torque_cbf
     }
     else
     {
-      // Fallback
+      // Fallback: no CBF force (the robot ramps any previous force down by itself)
       res.qp_success = false;
       res.qp_cost = qp_cost;
       res.f_n.setZero();
@@ -590,6 +655,21 @@ namespace torque_cbf
       res.F_cart_lat.setZero();
       res.slack_delta = 0.0;
     }
+
+    if (rate_on)
+    {
+      for (Eigen::Index i = 0; i < m; ++i)
+      {
+        const double tol = 1e-9 * std::max(1.0, res.f_rate_max(i));
+        if (res.f_rate_max(i) < res.f_brake_max(i) && res.f_n(i) >= res.f_rate_max(i) - tol)
+        {
+          res.rate_limited = true;
+        }
+      }
+    }
+    // Applied force after this call: the new command, or the previous force still ramping down
+    f_prev_ = rate_on ? Eigen::VectorXd(res.f_n.cwiseMax(res.f_applied_est)) : res.f_n;
+    has_f_prev_ = true;
 
     return res;
   }

@@ -7,6 +7,7 @@
 
 #include <Eigen/Dense>
 #include <functional>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -26,6 +27,10 @@ namespace damping_cbf
     double v_0 = -0.35;                            ///< Nominal entry velocity at zeta = p_ths [m/s] (v_0 < v_ths < 0)
     double gamma = 15.0;                           ///< CBF class-K decay gain [1/s] (gamma > 0)
     double d_max = 300.0;                          ///< Maximum allowable damping factor [Ns/m]
+    double d_max_inertia_gain = 0.0;               ///< kappa [1/s]: inertia-dependent damping limit
+                                                   ///< d_max_eff = min(d_max, kappa * rho), rho = effective inertia
+                                                   ///< along the plane normal. Caps the damping bandwidth d/rho <= kappa
+                                                   ///< (sampled-data stability). 0 = disabled (fixed d_max)
     double slack_linear_penalty = 1e6;             ///< Exact L1 slack penalty weight in 2D QP
     double slack_quadratic_penalty = 1e4;          ///< Quadratic L2 slack penalty weight in 2D QP
     bool latch_entry_velocity = false;             ///< If true, one-sided latch on zone entry: v_0 <- min(dzeta_entry, v_0),
@@ -37,6 +42,13 @@ namespace damping_cbf
                                                    ///< (1 = unfiltered; e.g. 0.2 at 1 kHz ~ 5 ms time constant).
                                                    ///< Affects ONLY the latched value, never the QP velocity
     bool compensate_external_force = true;         ///< If true, includes external wrench F_ext in a_drift (if false, only nominal impedance forces are included)
+    double tau_rate_limit = 0.0;                   ///< Actuator torque-rate budget for the CBF damping torque [Nm/s] (e.g. 900 with
+                                                   ///< the Franka 1000 Nm/s limit). 0 = disabled. When enabled the normal damping
+                                                   ///< force f = d*|dzeta| may INCREASE by at most r*dt per call above the force the
+                                                   ///< rate-limited robot still applies, r = tau_rate_limit / max_j |(J^T n)_j| [N/s].
+                                                   ///< Decreases are not constrained (a lingering damping force only dissipates more).
+                                                   ///< Single-plane solvers only
+    double dt = 0.001;                             ///< Control period [s] used by the rate limit
     ProfileType profile = ProfileType::SMOOTHSTEP; ///< Shaping function h(u)
 
     /// Cartesian compliance gains (Eq. 3)
@@ -58,7 +70,12 @@ namespace damping_cbf
     double barrier_B = 0.0;                          ///< CBF value B(zeta, dzeta) = dzeta - v_min(zeta) [m/s]
     double Lf_B = 0.0;                               ///< Drift Lie derivative L_f B = a_drift - v_min'(zeta)*dzeta [m/s^2]
     double Lg_B = 0.0;                               ///< Control Lie derivative L_g B = -dzeta / rho [1/(kg*s)]
-    double d_cbf = 0.0;                              ///< Optimal QP damping factor in [0, d_max] [Ns/m] (primary / critical plane)
+    double d_max_eff = 0.0;                          ///< Damping upper bound used by the QP: min(d_max, kappa*rho) [Ns/m]
+    double f_applied_est = 0.0;                      ///< Estimated damping force still applied by the rate-limited robot [N]
+    double d_rate_max = 0.0;                         ///< Ramp-up upper bound on d [Ns/m]
+    double f_rate = 0.0;                             ///< Normal-force rate limit r used [N/s] (inf if disabled)
+    bool rate_limited = false;                       ///< True if the ramp-up bound is active at the solution
+    double d_cbf = 0.0;                              ///< Optimal QP damping factor in [0, d_max_eff] [Ns/m] (primary / critical plane)
     double slack_eps = 0.0;                          ///< Optimal QP relaxation slack variable eps >= 0 [m/s^2]
     double qp_cost = 0.0;                            ///< Optimal objective value returned by solve_quadprog
     Eigen::Vector2d z_opt = Eigen::Vector2d::Zero(); ///< 2D QP solution vector z* = [d_cbf, slack_eps]^T
@@ -129,6 +146,14 @@ namespace damping_cbf
     /// Reset any latched entry velocity state
     void resetEntryState();
 
+    /// Forget the previously applied damping force (rate limit then starts from zero force)
+    void resetRateState();
+
+    /// Normal-force rate limit [N/s] for a joint torque-rate limit tau_rate [Nm/s]:
+    /// r = tau_rate / max_j |(J^T n6)_j|  (infinity if tau_rate <= 0)
+    static double computeNormalForceRate(const Eigen::MatrixXd &J, const Eigen::Vector3d &normal,
+                                         double tau_rate);
+
     /// Evaluate normalized profile h(u) and antiderivative H(u) for u in [0, 1]
     double evaluateProfileH(double u) const;
     double evaluateAntiderivativeH(double u) const;
@@ -153,6 +178,10 @@ namespace damping_cbf
 
     /// Evaluate the Control Barrier Function B(zeta, dzeta) = dzeta - v_min(zeta)
     double computeBarrierValue(double zeta, double dzeta) const;
+
+    /// Damping upper bound for effective inertia rho: min(d_max, d_max_inertia_gain * rho)
+    /// (d_max if d_max_inertia_gain <= 0)
+    double computeEffectiveDMax(double rho) const;
 
     // -------------------------------------------------------------------------
     // Aligned High-Level Torque Computation
@@ -259,9 +288,12 @@ namespace damping_cbf
 
     /**
      * @brief Low-level scalar 2D CBF-QP solver (pre-projected normal coordinates).
+     * @param normal_force_rate  Rate limit r of the normal damping force [N/s] (see computeNormalForceRate);
+     *                           used only if config.tau_rate_limit > 0. Infinity = no rate limit.
      */
     CBFStepResult solveDampingQP(
         double zeta, double dzeta, double rho, double a_drift = 0.0,
+        double normal_force_rate = std::numeric_limits<double>::infinity(),
         const Eigen::MatrixXd &A_extra = Eigen::MatrixXd(0, 2),
         const Eigen::VectorXd &b_extra = Eigen::VectorXd(0));
 
@@ -301,6 +333,7 @@ namespace damping_cbf
     double entry_dzeta_ = 0.0;          ///< (Filtered) normal velocity recorded at zone entry
     bool dzeta_filt_init_ = false;      ///< Latch-velocity filter initialised
     double dzeta_filt_ = 0.0;           ///< Latch-velocity filter state
+    double f_prev_ = 0.0;               ///< Estimated normal damping force applied after the previous call [N]
     std::function<double(double)> custom_h_;
     std::function<double(double)> custom_H_;
   };
