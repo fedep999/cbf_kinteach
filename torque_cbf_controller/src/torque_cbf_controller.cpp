@@ -452,21 +452,6 @@ namespace torque_cbf
       const double B_i = dzeta_i - v_min_i;
       const double a_drift_i = n6_i.dot(a_drift_total);
 
-      // Lower bound b_cbf,i
-      double b_i = 0.0;
-      if (in_zone)
-      {
-        b_i = dv_min_i * dzeta_i - a_drift_i - config_.gamma * B_i;
-        res.active_planes[static_cast<std::size_t>(i)] = (b_i > 0.0);
-        zone_planes.push_back(i);
-      }
-      else
-      {
-        // Out of zone: no CBF row is added to the QP; finite sentinel kept for telemetry only
-        b_i = -1e3;
-        res.active_planes[static_cast<std::size_t>(i)] = false;
-      }
-
       // One-way velocity braking cap (Passivity / Kinesthetic Teaching)
       // When moving away (dzeta >= 0), cap is 0 -> f_n == 0 identically.
       // When approaching (dzeta < 0), cap is (rho_i / dt) * |dzeta_i|.
@@ -502,6 +487,25 @@ namespace torque_cbf
         }
       }
       res.f_brake_max(i) = f_brake_i;
+
+      // Lower bound b_cbf,i (capped by the one-way braking cap so the barrier never fights passivity)
+      double b_i = 0.0;
+      if (in_zone)
+      {
+        b_i = dv_min_i * dzeta_i - a_drift_i - config_.gamma * B_i;
+        if (config_.enforce_passivity && std::isfinite(f_brake_i))
+        {
+          b_i = std::min(b_i, f_brake_i / res.rho(i));
+        }
+        res.active_planes[static_cast<std::size_t>(i)] = (b_i > 0.0);
+        zone_planes.push_back(i);
+      }
+      else
+      {
+        // Out of zone: no CBF row is added to the QP; finite sentinel kept for telemetry only
+        b_i = -1e3;
+        res.active_planes[static_cast<std::size_t>(i)] = false;
+      }
 
       // Ramp-up bound f <= f_app + r*dt; f_app = what the robot still applies (decays by <= r*dt)
       if (rate_on)

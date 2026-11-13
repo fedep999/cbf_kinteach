@@ -40,8 +40,8 @@ namespace jtorque_cbf
     double v_ths = -0.002;                         ///< Target contact velocity threshold [m/s] (v_ths < 0)
     double v_0 = -0.35;                            ///< Nominal entry approach velocity [m/s] (v_0 < v_ths < 0)
     double gamma = 15.0;                           ///< CBF class-K decay gain [1/s] (gamma > 0)
-    double w_slack = 1e4;                          ///< CBF slack quadratic penalty
-    double w_lin = 1e6;                            ///< CBF slack linear penalty
+    double w_slack = 1e3;                          ///< CBF slack quadratic penalty
+    double w_lin = 1e4;                            ///< CBF slack linear penalty
     bool latch_entry_velocity = false;             ///< One-sided entry latch: v_0 <- min(dzeta_entry, v_0)
     double zone_exit_hysteresis = 0.0;             ///< Latch zone left only at zeta > p_ths + hysteresis [m]
     double latch_velocity_filter_alpha = 1.0;      ///< EMA coefficient (0, 1] of the latched entry velocity
@@ -60,14 +60,13 @@ namespace jtorque_cbf
     double max_moment = 0.5;             ///< |component of F_rot| <= this [Nm]               (0 = no moment)
 
     // --- Cost: weights of the end-effector force produced by tau_cbf, F = Lambda J M^-1 tau ---
-    double w_lateral = 1e3; ///< Weight of the lateral force (normal-force weight is 1)
-    double w_moment = 1e3;  ///< Weight of the moment
-    double w_null = 1e3;    ///< Weight of the nullspace torque (I - J^T Jbar^T) tau (no effect on the elbow)
+    double w_lateral = 1e4; ///< Weight of the lateral force (normal-force weight is 1)
+    double w_moment = 1e4;  ///< Weight of the moment
+    double w_null = 1e5;    ///< Weight of the nullspace torque (I - J^T Jbar^T) tau (no effect on the elbow)
     double w_reg = 1e-6;    ///< Small Tikhonov term on tau (strict convexity)
 
-    /// Penalty of the guarantee slacks relative to the CBF slack (>> 1): guarantees are only relaxed when the
-    /// actuator physically cannot satisfy them (e.g. a rate-limited torque still ramping down); violations are
-    /// reported. Priorities: one-way normal action (x100) > passivity (x10) > lateral force / moment (x1).
+    /// Legacy compatibility field (unused: guarantee constraints are hard and only relaxed by the exact
+    /// hardware decay torque tau_zero = clamp(0, lo, hi) when 0 is outside the rate-limit box).
     double guarantee_slack_factor = 1e3;
 
     // --- Actuator limits (hard: they describe what the robot can apply) ---
@@ -137,20 +136,20 @@ namespace jtorque_cbf
    * @class JointTorqueCBFController
    * @brief Joint-space torque CBF: tau_cbf is the QP decision variable.
    *
-   *   min_{tau, delta, s_n, s_P, s_l}  1/2 F^T W_F F + 1/2 w_null |N_tau tau|^2 + 1/2 w_reg |tau|^2
-   *                                    + 1/2 w_slack delta^2 + w_lin delta + sum_k c_k (1/2 w_slack s_k^2 + w_lin s_k)
+   *   min_{tau, delta}  1/2 F^T W_F F + 1/2 w_null |N_tau tau|^2 + 1/2 w_reg |tau|^2
+   *                     + 1/2 w_slack delta^2 + w_lin delta
    *   with F = Lambda J M^-1 tau (EE force producing the same acceleration), W_F = 1 along the normals,
-   *   w_lateral laterally, w_moment on moments; c_n = 100 c, c_P = 10 c, c_l = c, c = guarantee_slack_factor.
+   *   w_lateral laterally, w_moment on moments.
    *
-   *   s.t. barrier (per plane in zone):   n_i^T J M^-1 tau + delta >= b_cbf,i
-   *        one-way normal action:         f_eq,i + s_n >= 0,  -f_eq,i + s_n >= -cap_i,  f_eq,i = rho_i n_i^T J M^-1 tau
-   *        passivity:                     -dq^T tau + s_P >= 0
-   *        bounded lateral force/moment:  |(P_lat F_lin)_k| <= eps_lat + s_l,  |F_rot,k| <= eps_rot + s_l
+   *   s.t. barrier (per plane in zone):   n_i^T J M^-1 tau + delta >= min(b_cbf,i, cap_i / rho_i)
+   *        one-way normal action:         0 <= f_eq,i <= cap_i,  f_eq,i = rho_i n_i^T J M^-1 tau
+   *        passivity:                     -dq^T tau >= 0
+   *        bounded lateral force/moment:  |(P_lat F_lin)_k| <= eps_lat,  |F_rot,k| <= eps_rot
    *        actuator (hard box):           torque limits  and  per-joint rate limit
    *
-   * With max_lateral_force = max_moment = 0 and no rate limit the solution equals the normal-force design
-   * tau = J^T N f_n (up to the w_null / w_reg regularisation). The guarantee slacks are > 0 only when
-   * the box (actuator physics) makes a guarantee impossible; they are reported in the result.
+   * Whenever tau = 0 is inside the actuator box [lo, hi], all guarantee constraints are hard. When the
+   * rate limit traps tau away from 0, any guarantee row violated at tau_zero = clamp(0, lo, hi) is relaxed
+   * to its value at tau_zero so the QP stays strictly feasible without extra slack variables.
    */
   class JointTorqueCBFController
   {

@@ -8,15 +8,18 @@ The properties of the normal-force design are kept as constraints:
 
 | Property | Constraint |
 |---|---|
-| Barrier (same as `torque_cbf`) | `n_i^T J M^-1 tau + delta >= b_cbf,i` |
+| Barrier (capped by braking cap) | `n_i^T J M^-1 tau + delta >= min(b_cbf,i, cap_i / rho_i)` |
 | One-way normal action, no pushback | `0 <= f_eq,i <= cap_i`, `f_eq,i = rho_i n_i^T J M^-1 tau` (normal acceleration from ALL force/moment components, times rho) |
 | Passivity | `tau^T dq <= 0` |
 | Bounded lateral force / moment | each component of `(I - N N^+) F_lin` within `max_lateral_force`, of `F_rot` within `max_moment`, `F = Lambda J M^-1 tau` |
 | Actuator (hard) | joint torque limits and per-joint rate limit `tau_rate_limit` on `tau_nom + tau_cbf` |
 
-The guarantee rows have their own slacks (one-way normal > passivity > lateral), weighted far above the
-CBF slack. They become non-zero only when the actuator box makes a guarantee physically impossible, and
-are reported in the result (`sigma_normal`, `sigma_power`, `sigma_lateral`).
+Only a single slack variable `delta` (for the CBF barrier) is used in the QP. Whenever `tau = 0` lies inside the
+actuator box `[lo, hi]`, all guarantee rows (one-way normal action, passivity, bounded lateral force/moment) are
+strictly hard constraints. When the torque-rate limit traps `tau` away from `0`, any guarantee row violated at
+`tau_zero = clamp(0, lo, hi)` is relaxed to its value at `tau_zero` so the QP remains strictly feasible without
+trading off passivity against `delta`; the unavoidable hardware relaxation is reported in the result
+(`sigma_normal`, `sigma_power`, `sigma_lateral`).
 
 With `tau_rate_limit = 0` and `max_lateral_force = max_moment = 0` the controller reproduces
 `torque_cbf` (verified on 200 random Panda states: max difference 2e-4 Nm).

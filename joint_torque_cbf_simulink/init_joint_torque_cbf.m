@@ -52,8 +52,8 @@ cbf_p_ths     = 0.30;    % Distance activation threshold [m] (p_ths > 0)
 cbf_v_ths     = -0.003;  % Terminal contact velocity threshold [m/s] (v_ths < 0)
 cbf_v_0       = -0.20;   % Nominal entry approach velocity [m/s] (v_0 < v_ths < 0)
 cbf_gamma     = 15.0;    % Class-K decay gain [1/s]
-cbf_w_lin     = 1e6;     % CBF slack linear penalty weight
-cbf_w_slack   = 1e4;     % CBF slack quadratic penalty weight
+cbf_w_lin     = 1e4;     % CBF slack linear penalty weight
+cbf_w_slack   = 1e3;     % CBF slack quadratic penalty weight
 cbf_tau_limit = 150.0;   % Legacy scalar limit [Nm] (fallback only, superseded by cbf_tau_max)
 % Franka Emika Panda joint torque limits [Nm], enforced on the TOTAL torque g + tau_nom + tau_cbf
 cbf_tau_max   = [87; 87; 87; 87; 12; 12; 12];
@@ -76,10 +76,10 @@ cbf_tau_rate      = 999;
 cbf_max_lat_force = 5.0;   % [N]
 cbf_max_moment    = 0.5;   % [Nm]
 % Cost weights of the end-effector force produced by tau_cbf (normal component weight = 1)
-cbf_w_lateral     = 1e3;
-cbf_w_moment      = 1e3;
-cbf_w_null        = 1e3;   % nullspace torque (no effect on the elbow)
-% Penalty of the guarantee slacks (no pushback > passivity > lateral) relative to the CBF slack
+cbf_w_lateral     = 1e4;
+cbf_w_moment      = 1e4;
+cbf_w_null        = 1e5;   % nullspace torque (no effect on the elbow)
+% Legacy compatibility parameter (unused: guarantees are hard when tau = 0 is reachable)
 cbf_guar_factor   = 1e3;
 
 % Packed parameters for sfun_joint_torque_cbf (31x1):

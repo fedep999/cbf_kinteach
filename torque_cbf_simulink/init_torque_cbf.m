@@ -52,8 +52,8 @@ cbf_p_ths     = 0.30;    % Distance activation threshold [m] (p_ths > 0)
 cbf_v_ths     = -0.003;  % Terminal contact velocity threshold [m/s] (v_ths < 0)
 cbf_v_0       = -0.80;   % Nominal entry approach velocity [m/s] (v_0 < v_ths < 0)
 cbf_gamma     = 12.0;    % Class-K decay gain [1/s]
-cbf_w_lin     = 1e10;     % Slack linear penalty weight
-cbf_w_slack   = 1e8;     % Slack quadratic penalty weight
+cbf_w_lin     = 1e6;     % Slack linear penalty weight
+cbf_w_slack   = 1e4;     % Slack quadratic penalty weight
 cbf_tau_limit = 150.0;   % Legacy scalar limit [Nm] (fallback only, superseded by cbf_tau_max)
 % Franka Emika Panda joint torque limits [Nm] (datasheet / libfranka tau_max).
 % Enforced on the TOTAL torque g + tau_null + tau_cbf.
@@ -82,7 +82,7 @@ cbf_latch_entry  = 1;      % 1 = enabled, 0 = disabled
 cbf_zone_hyst    = 0.005;  % Zone exit hysteresis [m]: no re-latch when hovering around p_ths
 cbf_latch_alpha  = 0.2;    % EMA coefficient (0,1] of the latched velocity (0.2 @ 1 kHz ~ 5 ms)
 
-cbf_tau_rate = 999;   % [Nm/s] CBF torque-rate budget (0 = off, recommended)
+cbf_tau_rate = 0;     % [Nm/s] CBF torque-rate budget (0 = off, recommended)
 
 % Packed parameters for sfun_torque_cbf (25x1):
 % [p_ths, v_ths, v_0, gamma, w_lin, w_slack, tau_limit, dt, nx, ny, nz, ox, oy, oz,

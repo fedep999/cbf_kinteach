@@ -311,14 +311,6 @@ namespace jtorque_cbf
       const double a_drift = n6.dot(a_total);
       res.rho(i) = 1.0 / std::max(1e-9, static_cast<double>(n6.transpose() * Lambda_inv * n6));
 
-      double b = -1e3; // sentinel (no row) outside the zone
-      if (in_zone)
-      {
-        b = dv_min * dzeta - a_drift - config_.gamma * B;
-        res.active_planes[si] = (b > 0.0);
-        zone.push_back(i);
-      }
-
       // One-way normal-force cap (as torque_cbf) + pushback-aware cap under a rate limit
       double cap = kInf;
       if (config_.enforce_passivity)
@@ -341,6 +333,18 @@ namespace jtorque_cbf
         }
       }
       res.f_brake_max(i) = cap;
+
+      double b = -1e3; // sentinel (no row) outside the zone
+      if (in_zone)
+      {
+        b = dv_min * dzeta - a_drift - config_.gamma * B;
+        if (config_.enforce_passivity && std::isfinite(cap))
+        {
+          b = std::min(b, cap / res.rho(i));
+        }
+        res.active_planes[si] = (b > 0.0);
+        zone.push_back(i);
+      }
 
       res.zetas(i) = zeta;
       res.dzetas(i) = dzeta;
@@ -443,11 +447,10 @@ namespace jtorque_cbf
       return res;
     }
 
-    // ---------------- QP in z = [tau (n), delta, s_n, s_P, s_l] ----------------
-    const Eigen::Index nz = n + 4;
-    const Eigen::Index id = n, isn = n + 1, isp = n + 2, isl = n + 3;
-    const double c = config_.guarantee_slack_factor;
-    const double c_n = 100.0 * c, c_p = 10.0 * c, c_l = c;
+    // ---------------- QP in z = [tau (n), delta] ----------------
+    const Eigen::Index nz = n + 1;
+    const Eigen::Index id = n;
+    const Eigen::VectorXd tau_zero = Eigen::VectorXd::Zero(n).cwiseMax(lo).cwiseMin(hi);
 
     Eigen::Matrix<double, 6, 6> W_F = Eigen::Matrix<double, 6, 6>::Zero();
     W_F.topLeftCorner<3, 3>() = P_span + config_.w_lateral * P_lat;
@@ -457,29 +460,36 @@ namespace jtorque_cbf
                             config_.w_reg * Eigen::MatrixXd::Identity(n, n);
     G.topLeftCorner(n, n) = 0.5 * (G.topLeftCorner(n, n) + G.topLeftCorner(n, n).transpose());
     G(id, id) = config_.w_slack;
-    G(isn, isn) = c_n * config_.w_slack;
-    G(isp, isp) = c_p * config_.w_slack;
-    G(isl, isl) = c_l * config_.w_slack;
     Eigen::VectorXd g0 = Eigen::VectorXd::Zero(nz);
     g0(id) = config_.w_lin;
-    g0(isn) = c_n * config_.w_lin;
-    g0(isp) = c_p * config_.w_lin;
-    g0(isl) = c_l * config_.w_lin;
 
     std::vector<Eigen::VectorXd> rows;
     std::vector<double> rhs;
-    auto add_row = [&](const Eigen::VectorXd &a_tau, Eigen::Index slack_idx, double b) {
+    auto add_barrier_row = [&](const Eigen::VectorXd &a_tau, double b) {
       Eigen::VectorXd r = Eigen::VectorXd::Zero(nz);
       r.head(n) = a_tau;
-      r(slack_idx) = 1.0;
+      r(id) = 1.0;
       rows.push_back(r);
       rhs.push_back(b);
+    };
+    auto add_guarantee_row = [&](const Eigen::VectorXd &a_tau, double b, double &sigma_out) {
+      const double val_zero = a_tau.dot(tau_zero);
+      double b_eff = b;
+      if (val_zero < b)
+      {
+        sigma_out = std::max(sigma_out, b - val_zero);
+        b_eff = val_zero - 1e-7;
+      }
+      Eigen::VectorXd r = Eigen::VectorXd::Zero(nz);
+      r.head(n) = a_tau;
+      rows.push_back(r);
+      rhs.push_back(b_eff);
     };
 
     // Barrier rows: n_i^T J M^-1 tau + delta >= b_i
     for (Eigen::Index i : zone)
     {
-      add_row(JMinv.transpose() * N6.col(i), id, res.b_cbf(i));
+      add_barrier_row(JMinv.transpose() * N6.col(i), res.b_cbf(i));
     }
 
     if (config_.enforce_passivity)
@@ -487,27 +497,30 @@ namespace jtorque_cbf
       // One-way normal action 0 <= f_eq,i <= cap_i (no pushback, also not through lateral forces / moments)
       for (Eigen::Index i = 0; i < m; ++i)
       {
-        add_row(Feq_rows.row(i).transpose(), isn, 0.0);
+        add_guarantee_row(Feq_rows.row(i).transpose(), 0.0, res.sigma_normal);
         if (std::isfinite(res.f_brake_max(i)))
         {
-          add_row(-Feq_rows.row(i).transpose(), isn, -res.f_brake_max(i));
+          const double cap_i = std::max(1e-7, res.f_brake_max(i));
+          add_guarantee_row(-Feq_rows.row(i).transpose(), -cap_i, res.sigma_normal);
         }
       }
       // CBF power tau^T dq <= 0
-      add_row(-dq, isp, 0.0);
+      add_guarantee_row(-dq, 0.0, res.sigma_power);
     }
 
-    // Bounded lateral force and moment: |row * tau| <= eps + s_l
+    // Bounded lateral force and moment: |row * tau| <= eps
+    const double eps_lat = std::max(1e-7, config_.max_lateral_force);
+    const double eps_rot = std::max(1e-7, config_.max_moment);
     const Eigen::MatrixXd Lat = P_lat * A_F.topRows(3);
     for (Eigen::Index k = 0; k < 3; ++k)
     {
       if (Lat.row(k).norm() > 1e-9)
       {
-        add_row(Lat.row(k).transpose(), isl, -config_.max_lateral_force);
-        add_row(-Lat.row(k).transpose(), isl, -config_.max_lateral_force);
+        add_guarantee_row(Lat.row(k).transpose(), -eps_lat, res.sigma_lateral);
+        add_guarantee_row(-Lat.row(k).transpose(), -eps_lat, res.sigma_lateral);
       }
-      add_row(A_F.row(3 + k).transpose(), isl, -config_.max_moment);
-      add_row(-A_F.row(3 + k).transpose(), isl, -config_.max_moment);
+      add_guarantee_row(A_F.row(3 + k).transpose(), -eps_rot, res.sigma_lateral);
+      add_guarantee_row(-A_F.row(3 + k).transpose(), -eps_rot, res.sigma_lateral);
     }
 
     Eigen::MatrixXd A_ineq(static_cast<Eigen::Index>(rows.size()), nz);
@@ -521,11 +534,8 @@ namespace jtorque_cbf
     Eigen::VectorXd lb(nz), ub(nz);
     lb.head(n) = lo;
     ub.head(n) = hi;
-    for (Eigen::Index k = id; k < nz; ++k)
-    {
-      lb(k) = 0.0;
-      ub(k) = kInf;
-    }
+    lb(id) = 0.0;
+    ub(id) = kInf;
 
     Eigen::VectorXd z = Eigen::VectorXd::Zero(nz);
     const double cost = cbf::solve_quadprog_box(G, g0, A_ineq, b_ineq, lb, ub, z);
@@ -534,9 +544,6 @@ namespace jtorque_cbf
       res.qp_success = true;
       res.qp_cost = cost;
       res.slack_delta = std::max(0.0, z(id));
-      res.sigma_normal = std::max(0.0, z(isn));
-      res.sigma_power = std::max(0.0, z(isp));
-      res.sigma_lateral = std::max(0.0, z(isl));
       finish(z.head(n));
     }
     else
@@ -544,7 +551,7 @@ namespace jtorque_cbf
       // Fallback: the reachable torque closest to zero (no CBF action beyond what the actuator forces)
       res.qp_success = false;
       res.qp_cost = cost;
-      finish(Eigen::VectorXd::Zero(n).cwiseMax(lo).cwiseMin(hi));
+      finish(tau_zero);
     }
     return res;
   }

@@ -97,8 +97,6 @@ namespace
     c.v_ths = t.v_ths;
     c.v_0 = t.v_0;
     c.gamma = t.gamma;
-    c.w_lin = t.w_lin;
-    c.w_slack = t.w_slack;
     c.dt = t.dt;
     c.latch_entry_velocity = t.latch_entry_velocity;
     c.zone_exit_hysteresis = t.zone_exit_hysteresis;
