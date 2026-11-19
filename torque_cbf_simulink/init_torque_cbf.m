@@ -50,8 +50,8 @@ plane_offset = [0.48; 0.16; xTableHeight];        % Hyperplane offset
 
 cbf_p_ths     = 0.30;    % Distance activation threshold [m] (p_ths > 0)
 cbf_v_ths     = -0.003;  % Terminal contact velocity threshold [m/s] (v_ths < 0)
-cbf_v_0       = -0.80;   % Nominal entry approach velocity [m/s] (v_0 < v_ths < 0)
-cbf_gamma     = 12.0;    % Class-K decay gain [1/s]
+cbf_v_0       = -0.35;   % Nominal entry approach velocity [m/s] (v_0 < v_ths < 0)
+cbf_gamma     = 15.0;    % Class-K decay gain when B < 0 [1/s] (when B >= 0, gamma_eff = 0.2 * cbf_gamma = 3.0)
 cbf_w_lin     = 1e6;     % Slack linear penalty weight
 cbf_w_slack   = 1e4;     % Slack quadratic penalty weight
 cbf_tau_limit = 150.0;   % Legacy scalar limit [Nm] (fallback only, superseded by cbf_tau_max)

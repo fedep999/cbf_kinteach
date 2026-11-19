@@ -36,7 +36,8 @@ namespace torque_cbf
     double p_ths = 0.20;                           ///< Distance activation threshold [m] (p_ths > 0)
     double v_ths = -0.002;                         ///< Target contact velocity threshold [m/s] (v_ths < 0)
     double v_0 = -0.35;                            ///< Nominal entry approach velocity [m/s] (v_0 < v_ths < 0)
-    double gamma = 15.0;                           ///< CBF class-K decay gain [1/s] (gamma > 0)
+    double gamma = 15.0;                           ///< CBF class-K decay gain when B < 0 (outside envelope) [1/s] (gamma > 0)
+    double gamma_pos_scale = 0.2;                  ///< Scale factor in [0, 1] for gamma when B >= 0 (inside envelope): gamma_eff = gamma_pos_scale * gamma
     double w_slack = 1e4;                          ///< Slack quadratic penalty weight w_delta
     double w_lin = 1e6;                            ///< Slack linear penalty weight w_lin
     bool latch_entry_velocity = false;             ///< If true, one-sided latch on zone entry: v_0 <- min(dzeta_entry, v_0),

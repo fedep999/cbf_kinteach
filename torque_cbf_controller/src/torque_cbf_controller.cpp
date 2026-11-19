@@ -50,6 +50,10 @@ namespace torque_cbf
     {
       throw std::invalid_argument("gamma must be strictly positive.");
     }
+    if (!(config.gamma_pos_scale >= 0.0 && config.gamma_pos_scale <= 1.0))
+    {
+      throw std::invalid_argument("gamma_pos_scale must be in [0, 1].");
+    }
     if (config.w_slack <= 0.0)
     {
       throw std::invalid_argument("w_slack must be strictly positive.");
@@ -492,7 +496,8 @@ namespace torque_cbf
       double b_i = 0.0;
       if (in_zone)
       {
-        b_i = dv_min_i * dzeta_i - a_drift_i - config_.gamma * B_i;
+        const double gamma_eff = (B_i < 0.0) ? config_.gamma : (config_.gamma_pos_scale * config_.gamma);
+        b_i = dv_min_i * dzeta_i - a_drift_i - gamma_eff * B_i;
         if (config_.enforce_passivity && std::isfinite(f_brake_i))
         {
           b_i = std::min(b_i, f_brake_i / res.rho(i));

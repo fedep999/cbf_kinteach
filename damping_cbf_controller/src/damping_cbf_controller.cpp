@@ -40,6 +40,10 @@ namespace damping_cbf
     {
       throw std::invalid_argument("gamma must be strictly positive.");
     }
+    if (!(config.gamma_pos_scale >= 0.0 && config.gamma_pos_scale <= 1.0))
+    {
+      throw std::invalid_argument("gamma_pos_scale must be in [0, 1].");
+    }
     if (config.d_max < 0.0)
     {
       throw std::invalid_argument("d_max must be non-negative.");
@@ -348,10 +352,11 @@ namespace damping_cbf
       Eigen::MatrixXd A_ineq(1 + m_extra, 2);
       Eigen::VectorXd b_ineq(1 + m_extra);
 
-      // Row 0: Primary phase-space CBF constraint L_g B * d + 1 * eps >= -(L_f B + gamma * B)
+      // Row 0: Primary phase-space CBF constraint L_g B * d + 1 * eps >= -(L_f B + gamma_eff * B)
+      const double gamma_eff = (res.barrier_B < 0.0) ? config_.gamma : (config_.gamma_pos_scale * config_.gamma);
       A_ineq(0, 0) = res.Lg_B;
       A_ineq(0, 1) = 1.0;
-      b_ineq(0) = -(res.Lf_B + config_.gamma * res.barrier_B);
+      b_ineq(0) = -(res.Lf_B + gamma_eff * res.barrier_B);
 
       // Additional rows (if any): e.g. backup CBF or secondary barrier constraints
       if (m_extra > 0)
@@ -507,7 +512,8 @@ namespace damping_cbf
           const double M_ij = n6_vec[i].transpose() * Lambda_inv * n6_vec[j];
           G_cbf(i, j) = -M_ij * res.dzetas(j);
         }
-        rhs_cbf(i) = dv_min_i * dzeta_i - a_drift_i - config_.gamma * B_i;
+        const double gamma_eff = (B_i < 0.0) ? config_.gamma : (config_.gamma_pos_scale * config_.gamma);
+        rhs_cbf(i) = dv_min_i * dzeta_i - a_drift_i - gamma_eff * B_i;
       }
     }
 

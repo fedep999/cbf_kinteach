@@ -25,7 +25,8 @@ namespace damping_cbf
     double p_ths = 0.20;                           ///< Distance activation threshold [m] (p_ths > 0)
     double v_ths = -0.002;                         ///< Target (maximum magnitude) contact velocity [m/s] (v_ths < 0)
     double v_0 = -0.35;                            ///< Nominal entry velocity at zeta = p_ths [m/s] (v_0 < v_ths < 0)
-    double gamma = 15.0;                           ///< CBF class-K decay gain [1/s] (gamma > 0)
+    double gamma = 15.0;                           ///< CBF class-K decay gain when B < 0 (outside envelope) [1/s] (gamma > 0)
+    double gamma_pos_scale = 0.2;                  ///< Scale factor in [0, 1] for gamma when B >= 0 (inside envelope): gamma_eff = gamma_pos_scale * gamma
     double d_max = 300.0;                          ///< Maximum allowable damping factor [Ns/m]
     double d_max_inertia_gain = 0.0;               ///< kappa [1/s]: inertia-dependent damping limit
                                                    ///< d_max_eff = min(d_max, kappa * rho), rho = effective inertia

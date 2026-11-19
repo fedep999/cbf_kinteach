@@ -1,0 +1,11 @@
+controller,profile,profile_label,h_u,H_u_over_H_1,S_u,S_0,S_025,S_050,S_100,p_ths_m,v_0_mps,v_ths_mps,gamma_neg_1_per_s,gamma_pos_scale,gamma_pos_1_per_s,notes
+torque_cbf,CONSTANT,h1,1,u,1,1.000,1.000,1.000,1.000,0.30,-0.35,-0.003,15.0,0.35,5.25,"Step jump at entry; high gamma_pos avoids stopping too high (gamma_neg range 15-20)"
+torque_cbf,ROOT_FIFTH,h2,u^(1/5),u^(6/5),1.2*u^(1/5),0.000,0.909,1.045,1.200,0.30,-0.35,-0.003,15.0,0.25,3.75,"Front-loaded braking; scale 0.20-0.30 keeps stopping distance near wall"
+torque_cbf,LINEAR,h3,u,u^2,2*u,0.000,0.500,1.000,2.000,0.30,-0.35,-0.003,15.0,0.20,3.00,"Linearly rising slope; smooth buildup across zone (gamma_neg range 12-15)"
+torque_cbf,SMOOTHSTEP,h5,3*u^2-2*u^3,u^3*(2-u),2*u^2*(3-2*u),0.000,0.313,1.000,2.000,0.30,-0.35,-0.003,15.0,0.20,3.00,"Default profile; smooth C2 onset; scale 0.15 gives earlier upper-zone feel (2.25 1/s)"
+torque_cbf,QUINTIC,h4,u^5,u^6,6*u^5,0.000,0.006,0.188,6.000,0.30,-0.35,-0.003,12.0,0.15,1.80,"Weak top-half slope and 6x wall spike; scale 0.10-0.15 prevents deep dead zone"
+damping_cbf,CONSTANT,h1,1,u,1,1.000,1.000,1.000,1.000,0.30,-0.50,-0.020,12.0,0.35,4.20,"Constant baseline damping; higher gamma_pos prevents premature upper-zone stop"
+damping_cbf,ROOT_FIFTH,h2,u^(1/5),u^(6/5),1.2*u^(1/5),0.000,0.909,1.045,1.200,0.30,-0.50,-0.020,12.0,0.30,3.60,"Front-loaded damping; scale ~0.30 avoids over-damping near 25-30 cm"
+damping_cbf,LINEAR,h3,u,u^2,2*u,0.000,0.500,1.000,2.000,0.30,-0.50,-0.020,10.0,0.20,2.00,"Preserves linear damping ramp; with init_damping_cbf gamma=12 use scale 0.20 (gamma_pos=2.4)"
+damping_cbf,SMOOTHSTEP,h5,3*u^2-2*u^3,u^3*(2-u),2*u^2*(3-2*u),0.000,0.313,1.000,2.000,0.30,-0.50,-0.020,10.0,0.20,2.00,"Default profile; with init_damping_cbf gamma=12 use scale 0.20 (gamma_pos=2.4)"
+damping_cbf,QUINTIC,h4,u^5,u^6,6*u^5,0.000,0.006,0.188,6.000,0.30,-0.50,-0.020,8.0,0.125,1.00,"Near-zero upper slope; gamma_pos > 1.5 leaves top 20+ cm undamped"
