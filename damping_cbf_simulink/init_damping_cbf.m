@@ -76,6 +76,10 @@ cbf_stiff_decouple = 0;   % 1 made the robot drift/oscillate along z when untouc
 %  latch_entry_velocity, zone_exit_hysteresis, latch_velocity_filter_alpha]
 cbf_clip_drift = 1;   % 1 = ignore net drift away from the plane (conservative), 0 = two-sided
 
+% CBF force/velocity profile selector for sfun_damping_cbf input port 10 (1..5 matching h1..h5):
+% 1 = CONSTANT, 2 = ROOT_FIFTH, 3 = LINEAR, 4 = QUINTIC, 5 = SMOOTHSTEP
+cbf_profile = 5;
+
 cbf_damping_params = [cbf_p_ths; cbf_v_ths; cbf_v_0; cbf_gamma; cbf_d_max; ...
                       cbf_w_lin; cbf_w_quad; plane_normal; plane_offset; ...
                       cbf_latch_entry; cbf_zone_hyst; cbf_latch_alpha; cbf_clip_drift];% Savitzky-Golay force filter (aggressive)

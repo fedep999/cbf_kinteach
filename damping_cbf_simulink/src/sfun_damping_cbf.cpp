@@ -19,11 +19,33 @@
 #define IDX_TAU_RATE 17
 #define IDX_DT 18
 
+// Map 1-based Simulink profile selector matching h1..h5 to cbf::ProfileType
+static bool decodeProfileId(double raw_id, cbf::ProfileType &out)
+{
+  if (!std::isfinite(raw_id)) {
+    return false;
+  }
+  const double rounded = std::round(raw_id);
+  if (std::abs(raw_id - rounded) > 1e-6 || rounded < 1.0 || rounded > 5.0) {
+    return false;
+  }
+  switch (static_cast<int>(rounded)) {
+    case 1: out = cbf::ProfileType::CONSTANT;   return true;
+    case 2: out = cbf::ProfileType::ROOT_FIFTH; return true;
+    case 3: out = cbf::ProfileType::LINEAR;     return true;
+    case 4: out = cbf::ProfileType::QUINTIC;    return true;
+    case 5: out = cbf::ProfileType::SMOOTHSTEP; return true;
+    default: return false;
+  }
+}
+
 struct DampingInstance {
   damping_cbf::DampingCBFController controller;
   double last_params[N_CBF_PARAMS] = {0.0};
   bool has_params = false;   // last_params holds a set of parameters already seen
   bool configured = false;   // controller holds a VALID configuration
+  double last_profile_id = 0.0;
+  bool has_profile_id = false;   // last_profile_id holds a profile selector already seen
 };
 
 #ifdef MATLAB_MEX_FILE
@@ -39,7 +61,7 @@ static void mdlInitializeSizes(SimStruct *S)
     return;
   }
 
-  // 9 Input Ports:
+  // 10 Input Ports:
   // Port 0: zeta        (1x1 Distance along normal to hyperplane x_c [m])
   // Port 1: dzeta       (1x1 Velocity along normal v_c [m/s], true ground velocity)
   // Port 2: rho         (1x1 Effective Cartesian inertia m_c [kg])
@@ -56,10 +78,11 @@ static void mdlInitializeSizes(SimStruct *S)
   //          the Franka 1000 Nm/s limit), dt [s]: control period]
   // Port 7: Lambda      (6x6 Cartesian inertia matrix, same Jacobian/frame as F_nominal and F_ext)
   // Port 8: J           (6x7 Geometric Jacobian, same frame as Lambda; used for the torque-rate limit)
+  // Port 9: profile_id  (1x1 Force/velocity profile selector matching h1..h5: 1=CONSTANT, 2=ROOT_FIFTH, 3=LINEAR, 4=QUINTIC, 5=SMOOTHSTEP)
   //
   // Normal drift acceleration (same as damping_cbf::DampingCBFController::computeControlTorque):
   //   a_drift = n6^T * Lambda^-1 * (F_nominal + use_fext * F_ext)
-  if (!ssSetNumInputPorts(S, 9)) return;
+  if (!ssSetNumInputPorts(S, 10)) return;
 
   // Port 0: zeta (1x1)
   ssSetInputPortWidth(S, 0, 1);
@@ -106,6 +129,11 @@ static void mdlInitializeSizes(SimStruct *S)
   ssSetInputPortDirectFeedThrough(S, 8, 1);
   ssSetInputPortRequiredContiguous(S, 8, 1);
 
+  // Port 9: profile_id (1x1)
+  ssSetInputPortWidth(S, 9, 1);
+  ssSetInputPortDirectFeedThrough(S, 9, 1);
+  ssSetInputPortRequiredContiguous(S, 9, 1);
+
   // 2 Output Ports:
   // Port 0: d_cbf      (1x1 Optimal Numerical QP Damping Coefficient in [0, d_max])
   // Port 1: telemetry  (8x1 Vector: [is_active, zeta, dzeta, v_min, barrier_B, Lf_B, Lg_B, slack_eps])
@@ -146,8 +174,9 @@ static void mdlOutputs(SimStruct *S, int_T tid)
   const real_T *u_Fext  = ssGetInputPortRealSignal(S, 4);
   const real_T use_fext = *ssGetInputPortRealSignal(S, 5);
   const real_T *params  = ssGetInputPortRealSignal(S, 6);
-  const real_T *u_Lam   = ssGetInputPortRealSignal(S, 7);
-  const real_T *u_J     = ssGetInputPortRealSignal(S, 8);
+  const real_T *u_Lam     = ssGetInputPortRealSignal(S, 7);
+  const real_T *u_J       = ssGetInputPortRealSignal(S, 8);
+  const real_T profile_id = *ssGetInputPortRealSignal(S, 9);
 
   // (Re)configure ONLY when the parameter vector changes: calling setConfig() every step is
   // harmless for the controller now, but skipping it avoids needless work, and validating here
@@ -175,7 +204,7 @@ static void mdlOutputs(SimStruct *S, int_T tid)
     config.latch_entry_velocity        = (params[13] > 0.5);
     config.zone_exit_hysteresis        = params[14];
     config.latch_velocity_filter_alpha = params[15];
-    config.profile                     = cbf::ProfileType::SMOOTHSTEP;
+    config.profile                     = inst->controller.getConfig().profile;
     config.tau_rate_limit              = params[IDX_TAU_RATE];
     config.dt                          = params[IDX_DT];
 
@@ -202,12 +231,36 @@ static void mdlOutputs(SimStruct *S, int_T tid)
   // No valid configuration yet: hold outputs (initially zero = no CBF damping)
   if (!inst->configured) return;
 
-  // F_ext compensation flag is a separate input; not part of the change-detected config
+  // F_ext compensation flag and profile selector are separate inputs; not part of the change-detected config
   {
     damping_cbf::ControllerConfig cfg = inst->controller.getConfig();
+    bool cfg_dirty = false;
+
     const bool comp = (use_fext > 0.5);
     if (cfg.compensate_external_force != comp) {
       cfg.compensate_external_force = comp;
+      cfg_dirty = true;
+    }
+
+    const bool profile_changed = !inst->has_profile_id ||
+        (std::isnan(profile_id) ? !std::isnan(inst->last_profile_id)
+                                : (profile_id != inst->last_profile_id));
+    if (profile_changed) {
+      inst->last_profile_id = profile_id;
+      inst->has_profile_id = true;
+
+      cbf::ProfileType requested_profile = cfg.profile;
+      if (decodeProfileId(profile_id, requested_profile)) {
+        if (cfg.profile != requested_profile) {
+          cfg.profile = requested_profile;
+          cfg_dirty = true;
+        }
+      } else {
+        SFUN_WARN(S, "sfun_damping_cbf: invalid profile_id (expected 1=CONSTANT, 2=ROOT_FIFTH, 3=LINEAR, 4=QUINTIC, 5=SMOOTHSTEP); keeping previous profile.");
+      }
+    }
+
+    if (cfg_dirty) {
       inst->controller.setConfig(cfg);   // already validated: cannot throw
     }
   }

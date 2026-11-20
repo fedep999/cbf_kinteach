@@ -19,11 +19,33 @@
 // Index of the torque-rate budget for tau_cbf [Nm/s] (0 = disabled)
 #define IDX_TAU_RATE 24
 
+// Map 1-based Simulink profile selector matching h1..h5 to cbf::ProfileType
+static bool decodeProfileId(double raw_id, cbf::ProfileType &out)
+{
+  if (!std::isfinite(raw_id)) {
+    return false;
+  }
+  const double rounded = std::round(raw_id);
+  if (std::abs(raw_id - rounded) > 1e-6 || rounded < 1.0 || rounded > 5.0) {
+    return false;
+  }
+  switch (static_cast<int>(rounded)) {
+    case 1: out = cbf::ProfileType::CONSTANT;   return true;
+    case 2: out = cbf::ProfileType::ROOT_FIFTH; return true;
+    case 3: out = cbf::ProfileType::LINEAR;     return true;
+    case 4: out = cbf::ProfileType::QUINTIC;    return true;
+    case 5: out = cbf::ProfileType::SMOOTHSTEP; return true;
+    default: return false;
+  }
+}
+
 struct TorqueControllerInstance {
   torque_cbf::TorqueCBFController controller;
   double last_params[N_CBF_PARAMS] = {0.0};
   bool has_params = false;   // last_params holds a set of parameters already seen
   bool configured = false;   // controller holds a VALID configuration
+  double last_profile_id = 0.0;
+  bool has_profile_id = false;   // last_profile_id holds a profile selector already seen
   // Outputs of the last major time step, re-emitted in minor steps (zero-order hold)
   double last_tau[N_JOINTS] = {0.0};
   double last_telem[N_TELEM] = {0.0};
@@ -56,7 +78,7 @@ static void mdlInitializeSizes(SimStruct *S)
     return;
   }
 
-  // 13 Input Ports:
+  // 14 Input Ports:
   // Port 0: q           (7x1 Joint Positions)
   // Port 1: dq          (7x1 Joint Velocities)
   // Port 2: x_ee        (3x1 End-Effector Cartesian Position)
@@ -77,7 +99,8 @@ static void mdlInitializeSizes(SimStruct *S)
   //           limit, leaving headroom for tau_null). Enables the rate bound and the pushback-aware cap.]
   //          tau_max_j > 0 are the per-joint limits, applied symmetrically to the TOTAL torque
   //          g + tau_nom + tau_cbf (tau_limit is kept only as a fallback and is unused here).
-  if (!ssSetNumInputPorts(S, 13)) return;
+  // Port 13: profile_id (1x1 Force/velocity profile selector matching h1..h5: 1=CONSTANT, 2=ROOT_FIFTH, 3=LINEAR, 4=QUINTIC, 5=SMOOTHSTEP)
+  if (!ssSetNumInputPorts(S, 14)) return;
 
   // Port 0: q (7x1)
   ssSetInputPortWidth(S, 0, 7);
@@ -144,6 +167,11 @@ static void mdlInitializeSizes(SimStruct *S)
   ssSetInputPortDirectFeedThrough(S, 12, 1);
   ssSetInputPortRequiredContiguous(S, 12, 1);
 
+  // Port 13: profile_id (1x1)
+  ssSetInputPortWidth(S, 13, 1);
+  ssSetInputPortDirectFeedThrough(S, 13, 1);
+  ssSetInputPortRequiredContiguous(S, 13, 1);
+
   // 2 Output Ports:
   // Port 0: tau_cbf   (7x1 Vector of CBF Joint Torques)
   // Port 1: telemetry (8x1 Vector: [is_active, zeta, dzeta, v_min, barrier_B, f_n_scalar, slack_delta, qp_cost])
@@ -199,6 +227,7 @@ static void mdlOutputs(SimStruct *S, int_T tid)
   const real_T *u_Fext    = ssGetInputPortRealSignal(S, 10);
   const real_T use_fext   = *ssGetInputPortRealSignal(S, 11);
   const real_T *u_params  = ssGetInputPortRealSignal(S, 12);
+  const real_T profile_id = *ssGetInputPortRealSignal(S, 13);
 
   // Map to Eigen
   Eigen::Map<const Eigen::Matrix<double, 7, 1>> q(u_q);
@@ -244,7 +273,7 @@ static void mdlOutputs(SimStruct *S, int_T tid)
     config.latch_entry_velocity        = (u_params[14] > 0.5);
     config.zone_exit_hysteresis        = u_params[15];
     config.latch_velocity_filter_alpha = u_params[16];
-    config.profile                     = cbf::ProfileType::SMOOTHSTEP;
+    config.profile                     = inst->controller.getConfig().profile;
     config.compensate_external_force   = (use_fext > 0.5);
     config.enforce_passivity           = true;
     config.tau_rate_limit              = u_params[IDX_TAU_RATE];
@@ -286,12 +315,36 @@ static void mdlOutputs(SimStruct *S, int_T tid)
     return;
   }
 
-  // F_ext compensation flag is a separate input; not part of the change-detected config
+  // F_ext compensation flag and profile selector are separate inputs; not part of the change-detected config
   {
     torque_cbf::TorqueCBFConfig cfg = inst->controller.getConfig();
+    bool cfg_dirty = false;
+
     const bool comp = (use_fext > 0.5);
     if (cfg.compensate_external_force != comp) {
       cfg.compensate_external_force = comp;
+      cfg_dirty = true;
+    }
+
+    const bool profile_changed = !inst->has_profile_id ||
+        (std::isnan(profile_id) ? !std::isnan(inst->last_profile_id)
+                                : (profile_id != inst->last_profile_id));
+    if (profile_changed) {
+      inst->last_profile_id = profile_id;
+      inst->has_profile_id = true;
+
+      cbf::ProfileType requested_profile = cfg.profile;
+      if (decodeProfileId(profile_id, requested_profile)) {
+        if (cfg.profile != requested_profile) {
+          cfg.profile = requested_profile;
+          cfg_dirty = true;
+        }
+      } else {
+        SFUN_WARN(S, "sfun_torque_cbf: invalid profile_id (expected 1=CONSTANT, 2=ROOT_FIFTH, 3=LINEAR, 4=QUINTIC, 5=SMOOTHSTEP); keeping previous profile.");
+      }
+    }
+
+    if (cfg_dirty) {
       inst->controller.setConfig(cfg);   // already validated: cannot throw
     }
   }

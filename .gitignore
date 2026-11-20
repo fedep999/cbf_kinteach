@@ -241,3 +241,5 @@ local_install/
 *.mat
 *_rtw/
 papers/
+Controller_trorque_cbf_22Franka
+Controller_jtorque_cbf_22Franka

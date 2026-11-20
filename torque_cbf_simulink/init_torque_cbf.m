@@ -84,6 +84,10 @@ cbf_latch_alpha  = 0.2;    % EMA coefficient (0,1] of the latched velocity (0.2 
 
 cbf_tau_rate = 0;     % [Nm/s] CBF torque-rate budget (0 = off, recommended)
 
+% CBF force/velocity profile selector for sfun_torque_cbf input port 14 (1..5 matching h1..h5):
+% 1 = CONSTANT, 2 = ROOT_FIFTH, 3 = LINEAR, 4 = QUINTIC, 5 = SMOOTHSTEP
+cbf_profile = 5;
+
 % Packed parameters for sfun_torque_cbf (25x1):
 % [p_ths, v_ths, v_0, gamma, w_lin, w_slack, tau_limit, dt, nx, ny, nz, ox, oy, oz,
 %  latch_entry_velocity, zone_exit_hysteresis, latch_velocity_filter_alpha,
