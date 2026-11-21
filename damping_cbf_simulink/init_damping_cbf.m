@@ -51,7 +51,8 @@ plane_offset = [0.48; 0.16; xTableHeight];        % Hyperplane offset
 cbf_p_ths    = 0.30;    % Distance activation threshold [m] (p_ths > 0)
 cbf_v_ths    = -0.02;  % Terminal contact velocity threshold [m/s] (v_ths < 0)
 cbf_v_0      = -0.5;   % Nominal entry velocity [m/s] (v_0 < v_ths < 0)
-cbf_gamma    = 12.0;    % Class-K decay gain when B < 0 [1/s] (when B >= 0, gamma_eff = 0.2 * cbf_gamma = 2.4)
+cbf_gamma    = 12.0;    % Class-K decay gain when B < 0 [1/s]
+cbf_gamma_pos_scale = 0.20; % Scale factor in [0, 1] for gamma when B >= 0 (inside envelope): gamma_eff = cbf_gamma_pos_scale * cbf_gamma
 cbf_d_max    = 350.0;   % Maximum allowable damping [Ns/m]
 cbf_w_lin    = 1e6;     % Slack linear penalty weight
 cbf_w_quad   = 1e4;     % Slack quadratic penalty weight
@@ -71,18 +72,25 @@ cbf_latch_alpha  = 0.2;    % EMA coefficient (0,1] of the latched velocity (0.2 
 % 0 = original impedance controller.
 cbf_stiff_decouple = 0;   % 1 made the robot drift/oscillate along z when untouched (9 Nov 2026), keep 0
 
-% Packed parameters for sfun_damping_cbf (16x1):
-% [p_ths, v_ths, v_0, gamma, d_max, w_lin, w_quad, nx, ny, nz, ox, oy, oz,
-%  latch_entry_velocity, zone_exit_hysteresis, latch_velocity_filter_alpha]
 cbf_clip_drift = 1;   % 1 = ignore net drift away from the plane (conservative), 0 = two-sided
+cbf_tau_rate   = 0;   % [Nm/s] CBF torque-rate budget (0 = off)
+cbf_dt         = 0.001; % Control period [s]
 
 % CBF force/velocity profile selector for sfun_damping_cbf input port 10 (1..5 matching h1..h5):
 % 1 = CONSTANT, 2 = ROOT_FIFTH, 3 = LINEAR, 4 = QUINTIC, 5 = SMOOTHSTEP
 cbf_profile = 5;
 
+% Packed parameters for sfun_damping_cbf (20x1):
+% [p_ths, v_ths, v_0, gamma, d_max, w_lin, w_quad, nx, ny, nz, ox, oy, oz,
+%  latch_entry_velocity, zone_exit_hysteresis, latch_velocity_filter_alpha,
+%  clip_drift, tau_rate_limit, dt, gamma_pos_scale]
 cbf_damping_params = [cbf_p_ths; cbf_v_ths; cbf_v_0; cbf_gamma; cbf_d_max; ...
                       cbf_w_lin; cbf_w_quad; plane_normal; plane_offset; ...
-                      cbf_latch_entry; cbf_zone_hyst; cbf_latch_alpha; cbf_clip_drift];% Savitzky-Golay force filter (aggressive)
+                      cbf_latch_entry; cbf_zone_hyst; cbf_latch_alpha; cbf_clip_drift; ...
+                      cbf_tau_rate; cbf_dt; cbf_gamma_pos_scale];
+assert(numel(cbf_damping_params) == 20, 'cbf_damping_params must be 20x1 (see sfun_damping_cbf.cpp)');
+
+% Savitzky-Golay force filter (aggressive)
 sg_p    = 2;        % polynomial order: 1 = strongest smoothing, 2 = keeps peaks better
 sg_N    = 21;      % window length (odd): 101 samples = 100 ms span at 1 kHz
 sg_mode = 'causal';   % 'centered' or 'causal'

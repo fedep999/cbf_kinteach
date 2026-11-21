@@ -11,13 +11,15 @@
 #include <vector>
 
 // Number of entries in the cbf_params input (Port 12)
-#define N_CBF_PARAMS 25
+#define N_CBF_PARAMS 26
 #define N_JOINTS 7
 #define N_TELEM 8
 // Index of the first per-joint torque limit |tau_max,j| in cbf_params
 #define IDX_TAU_MAX 17
 // Index of the torque-rate budget for tau_cbf [Nm/s] (0 = disabled)
 #define IDX_TAU_RATE 24
+// Index of gamma_pos_scale in [0, 1] (gamma_eff = gamma_pos_scale * gamma when B >= 0)
+#define IDX_GAMMA_POS_SCALE 25
 
 // Map 1-based Simulink profile selector matching h1..h5 to cbf::ProfileType
 static bool decodeProfileId(double raw_id, cbf::ProfileType &out)
@@ -91,12 +93,13 @@ static void mdlInitializeSizes(SimStruct *S)
   // Port 9: g           (7x1 Joint Gravity Vector)
   // Port 10: F_ext      (6x1 External Wrench)
   // Port 11: use_fext   (1x1 Boolean flag: 1 = compensate F_ext, 0 = ignore)
-  // Port 12: cbf_params (25x1 Vector of CBF Hyperparameters & Plane Definition)
+  // Port 12: cbf_params (26x1 Vector of CBF Hyperparameters & Plane Definition)
   //          [p_ths, v_ths, v_0, gamma, w_lin, w_slack, tau_limit, dt, nx, ny, nz, ox, oy, oz,
   //           latch_entry_velocity (0/1), zone_exit_hysteresis [m], latch_velocity_filter_alpha (0,1],
   //           tau_max_1 ... tau_max_7 [Nm],
   //           tau_rate_limit [Nm/s]: rate budget of tau_cbf (0 = off; e.g. 900 with the Franka 1000 Nm/s
-  //           limit, leaving headroom for tau_null). Enables the rate bound and the pushback-aware cap.]
+  //           limit, leaving headroom for tau_null). Enables the rate bound and the pushback-aware cap,
+  //           gamma_pos_scale [0,1]: scale factor for gamma when B >= 0 (gamma_eff = gamma_pos_scale * gamma).]
   //          tau_max_j > 0 are the per-joint limits, applied symmetrically to the TOTAL torque
   //          g + tau_nom + tau_cbf (tau_limit is kept only as a fallback and is unused here).
   // Port 13: profile_id (1x1 Force/velocity profile selector matching h1..h5: 1=CONSTANT, 2=ROOT_FIFTH, 3=LINEAR, 4=QUINTIC, 5=SMOOTHSTEP)
@@ -162,7 +165,7 @@ static void mdlInitializeSizes(SimStruct *S)
   ssSetInputPortDirectFeedThrough(S, 11, 1);
   ssSetInputPortRequiredContiguous(S, 11, 1);
 
-  // Port 12: cbf_params (25x1)
+  // Port 12: cbf_params (26x1)
   ssSetInputPortWidth(S, 12, N_CBF_PARAMS);
   ssSetInputPortDirectFeedThrough(S, 12, 1);
   ssSetInputPortRequiredContiguous(S, 12, 1);
@@ -266,6 +269,8 @@ static void mdlOutputs(SimStruct *S, int_T tid)
     config.v_ths                       = u_params[1];
     config.v_0                         = u_params[2];
     config.gamma                       = u_params[3];
+    config.gamma_pos_scale             = u_params[IDX_GAMMA_POS_SCALE];
+    if (!(config.gamma_pos_scale >= 0.0 && config.gamma_pos_scale <= 1.0)) finite = false;
     config.w_lin                       = u_params[4];
     config.w_slack                     = u_params[5];
     config.default_tau_limit           = u_params[6];

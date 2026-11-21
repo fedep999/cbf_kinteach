@@ -12,12 +12,14 @@
 #include <stdexcept>
 
 // Number of entries in the cbf_params input (Port 6)
-#define N_CBF_PARAMS 19
+#define N_CBF_PARAMS 20
 // Index of the one-sided drift clip flag in cbf_params
 #define IDX_CLIP_DRIFT 16
 // Index of the torque-rate budget [Nm/s] (0 = off) and of the control period dt [s]
 #define IDX_TAU_RATE 17
 #define IDX_DT 18
+// Index of gamma_pos_scale in [0, 1] (gamma_eff = gamma_pos_scale * gamma when B >= 0)
+#define IDX_GAMMA_POS_SCALE 19
 
 // Map 1-based Simulink profile selector matching h1..h5 to cbf::ProfileType
 static bool decodeProfileId(double raw_id, cbf::ProfileType &out)
@@ -70,12 +72,13 @@ static void mdlInitializeSizes(SimStruct *S)
   //                      uncompensated Cartesian Coriolis -Gamma*V [N, Nm])
   // Port 4: F_ext       (6x1 Full external wrench at the Jacobian reference point [N, Nm])
   // Port 5: use_fext    (1x1 Boolean flag: 1 = compensate F_ext in drift, 0 = ignore)
-  // Port 6: cbf_params  (19x1 Vector of CBF Hyperparameters & Plane Definition)
+  // Port 6: cbf_params  (20x1 Vector of CBF Hyperparameters & Plane Definition)
   //         [p_ths, v_ths, v_0, gamma, d_max, w_lin, w_quad, nx, ny, nz, ox, oy, oz,
   //          latch_entry_velocity (0/1), zone_exit_hysteresis [m], latch_velocity_filter_alpha (0,1],
   //          clip_drift (0/1): 1 = a_drift <- min(a_drift, 0) (net drift away from the plane ignored),
   //          tau_rate_limit [Nm/s]: torque-rate budget of the CBF damping torque (0 = off; e.g. 900 with
-  //          the Franka 1000 Nm/s limit), dt [s]: control period]
+  //          the Franka 1000 Nm/s limit), dt [s]: control period,
+  //          gamma_pos_scale [0,1]: scale factor for gamma when B >= 0 (gamma_eff = gamma_pos_scale * gamma)]
   // Port 7: Lambda      (6x6 Cartesian inertia matrix, same Jacobian/frame as F_nominal and F_ext)
   // Port 8: J           (6x7 Geometric Jacobian, same frame as Lambda; used for the torque-rate limit)
   // Port 9: profile_id  (1x1 Force/velocity profile selector matching h1..h5: 1=CONSTANT, 2=ROOT_FIFTH, 3=LINEAR, 4=QUINTIC, 5=SMOOTHSTEP)
@@ -114,7 +117,7 @@ static void mdlInitializeSizes(SimStruct *S)
   ssSetInputPortDirectFeedThrough(S, 5, 1);
   ssSetInputPortRequiredContiguous(S, 5, 1);
 
-  // Port 6: cbf_params (19x1)
+  // Port 6: cbf_params (20x1)
   ssSetInputPortWidth(S, 6, N_CBF_PARAMS);
   ssSetInputPortDirectFeedThrough(S, 6, 1);
   ssSetInputPortRequiredContiguous(S, 6, 1);
@@ -198,6 +201,8 @@ static void mdlOutputs(SimStruct *S, int_T tid)
     config.v_ths                       = params[1];
     config.v_0                         = params[2];
     config.gamma                       = params[3];
+    config.gamma_pos_scale             = params[IDX_GAMMA_POS_SCALE];
+    if (!(config.gamma_pos_scale >= 0.0 && config.gamma_pos_scale <= 1.0)) finite = false;
     config.d_max                       = params[4];
     config.slack_linear_penalty        = params[5];
     config.slack_quadratic_penalty     = params[6];

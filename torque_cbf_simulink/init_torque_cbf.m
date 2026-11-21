@@ -51,7 +51,8 @@ plane_offset = [0.48; 0.16; xTableHeight];        % Hyperplane offset
 cbf_p_ths     = 0.30;    % Distance activation threshold [m] (p_ths > 0)
 cbf_v_ths     = -0.003;  % Terminal contact velocity threshold [m/s] (v_ths < 0)
 cbf_v_0       = -0.35;   % Nominal entry approach velocity [m/s] (v_0 < v_ths < 0)
-cbf_gamma     = 15.0;    % Class-K decay gain when B < 0 [1/s] (when B >= 0, gamma_eff = 0.2 * cbf_gamma = 3.0)
+cbf_gamma     = 15.0;    % Class-K decay gain when B < 0 [1/s]
+cbf_gamma_pos_scale = 0.20; % Scale factor in [0, 1] for gamma when B >= 0 (inside envelope): gamma_eff = cbf_gamma_pos_scale * cbf_gamma
 cbf_w_lin     = 1e6;     % Slack linear penalty weight
 cbf_w_slack   = 1e4;     % Slack quadratic penalty weight
 cbf_tau_limit = 150.0;   % Legacy scalar limit [Nm] (fallback only, superseded by cbf_tau_max)
@@ -88,14 +89,15 @@ cbf_tau_rate = 0;     % [Nm/s] CBF torque-rate budget (0 = off, recommended)
 % 1 = CONSTANT, 2 = ROOT_FIFTH, 3 = LINEAR, 4 = QUINTIC, 5 = SMOOTHSTEP
 cbf_profile = 5;
 
-% Packed parameters for sfun_torque_cbf (25x1):
+% Packed parameters for sfun_torque_cbf (26x1):
 % [p_ths, v_ths, v_0, gamma, w_lin, w_slack, tau_limit, dt, nx, ny, nz, ox, oy, oz,
 %  latch_entry_velocity, zone_exit_hysteresis, latch_velocity_filter_alpha,
-%  tau_max_1 ... tau_max_7, tau_rate_limit]
+%  tau_max_1 ... tau_max_7, tau_rate_limit, gamma_pos_scale]
 cbf_torque_params = [cbf_p_ths; cbf_v_ths; cbf_v_0; cbf_gamma; cbf_w_lin; cbf_w_slack; ...
                      cbf_tau_limit; cbf_dt; plane_normal; plane_offset; ...
-                     cbf_latch_entry; cbf_zone_hyst; cbf_latch_alpha; cbf_tau_max; cbf_tau_rate];
-assert(numel(cbf_torque_params) == 25, 'cbf_torque_params must be 25x1 (see sfun_torque_cbf.cpp)');
+                     cbf_latch_entry; cbf_zone_hyst; cbf_latch_alpha; cbf_tau_max; cbf_tau_rate; ...
+                     cbf_gamma_pos_scale];
+assert(numel(cbf_torque_params) == 26, 'cbf_torque_params must be 26x1 (see sfun_torque_cbf.cpp)');
 % Savitzky-Golay force filter (aggressive)
 sg_p    = 2;        % polynomial order: 1 = strongest smoothing, 2 = keeps peaks better
 sg_N    = 21;      % window length (odd): 101 samples = 100 ms span at 1 kHz
